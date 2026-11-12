@@ -23,6 +23,10 @@ export const useTags = () => useQuery({ queryKey: ['tags'], queryFn: () => api.g
 export const useSavedReplies = () =>
   useQuery({ queryKey: ['saved-replies'], queryFn: () => api.get<{ savedReplies: SavedReply[] }>('/saved-replies').then((r) => r.savedReplies), staleTime: 60_000 })
 
+/** Who has which conversation open. Events keep it current; the slow refetch drops people whose tab closed. */
+export const usePresence = () =>
+  useQuery({ queryKey: ['presence-all'], queryFn: () => api.get<{ viewers: Record<number, Viewer[]> }>('/presence').then((r) => r.viewers), staleTime: 30_000, refetchInterval: 60_000 }).data ?? {}
+
 /** Keep lists and open conversations fresh from the server's event stream. */
 export function useLiveEvents() {
   const client = useQueryClient()
@@ -55,6 +59,7 @@ export function useLiveEvents() {
           if (event.reason === 'created' || event.reason === 'customer_reply') window.dispatchEvent(new CustomEvent('ansa:incoming', { detail: event }))
         } else if (event.type === 'presence') {
           client.setQueryData(['presence', event.conversationId], event.viewers as Viewer[])
+          client.setQueryData(['presence-all'], (old: Record<number, Viewer[]> | undefined) => ({ ...old, [event.conversationId]: event.viewers as Viewer[] }))
         } else if (event.type === 'mailbox') {
           void client.invalidateQueries({ queryKey: ['mailboxes'] })
         } else if (event.type === 'refresh' && event.scope === 'workspace') {
@@ -62,6 +67,7 @@ export function useLiveEvents() {
           void client.invalidateQueries({ queryKey: ['bootstrap'] })
         } else if (event.type === 'hello') {
           refreshLists()
+          void client.invalidateQueries({ queryKey: ['presence-all'] })
         }
       }
       source.onerror = () => {

@@ -421,6 +421,19 @@ const lastMailOf = (conversationId: number) =>
 const refsAfter = (last: any) => (last ? [...String(last.refs || '').split(/\s+/).filter(Boolean), last.message_id].slice(-20).join(' ') : null)
 
 /** A reply from an agent to the customer. Sends the email in the background. */
+/** The newest reply a teammate sent after the given thread. The composer asks before it sends a second answer. */
+export function teammateReplyAfter(conversationId: number, afterThreadId: number, userId: number): { name: string; at: number } | null {
+  const row = get<{ name: string; at: number }>(
+    `SELECT u.name AS name, t.created_at AS at FROM threads t JOIN users u ON u.id = t.user_id
+     WHERE t.conversation_id = ? AND t.type = 'reply' AND t.id > ? AND t.user_id != ? AND t.state != 'scheduled'
+     ORDER BY t.id DESC LIMIT 1`,
+    conversationId,
+    afterThreadId,
+    userId,
+  )
+  return row ?? null
+}
+
 export function addReply(conversationId: number, input: ReplyInput, actor: Actor): number {
   const bodyHtml = cleanHtml(input.bodyHtml)
   const text = htmlToText(bodyHtml)

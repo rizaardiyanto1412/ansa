@@ -502,3 +502,18 @@ test('send later: a scheduled reply waits, goes out when due, and holds back if 
   assert.deepEqual([conv.draft?.bodyHtml, conv.threadCount], ['<div>Reminder</div>', 2])
   assert.throws(() => conversations.sendScheduledNow(tc, actor), /not waiting/)
 })
+
+test('collision check: a teammate reply sent after you started writing is reported, your own is not', async () => {
+  const other = run('INSERT INTO users (name, email, password_hash, role, color, created_at) VALUES (?, ?, ?, ?, ?, ?)', 'Tyler Teammate', 'tyler@ansa.test', 'x', 'agent', '#0a7', Date.now()).id as number
+  const id = conversations.createConversation({ mailboxId, customerEmail: 'twice@acme.test', subject: 'Twice', bodyHtml: '<p>Help</p>', kind: 'customer' }, { userId: null, via: 'email' }).id
+  const started = Math.max(...conversations.getConversation(id).threads.map((t) => t.id))
+  assert.equal(conversations.teammateReplyAfter(id, started, agentId), null)
+
+  // A scheduled reply has not reached the customer, so it is no collision yet.
+  conversations.addReply(id, { bodyHtml: '<div>Later</div>', sendAt: Date.now() + 3_600_000 }, { userId: other, via: 'web' })
+  assert.equal(conversations.teammateReplyAfter(id, started, agentId), null)
+
+  conversations.addReply(id, { bodyHtml: '<div>Fixed</div>' }, { userId: other, via: 'web' })
+  assert.equal(conversations.teammateReplyAfter(id, started, agentId)?.name, 'Tyler Teammate')
+  assert.equal(conversations.teammateReplyAfter(id, started, other), null, 'your own reply is not a collision')
+})

@@ -1,8 +1,11 @@
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  /** The response body, for errors that carry more than a message. */
+  data: any
+  constructor(message: string, status: number, data: any = null) {
     super(message)
     this.status = status
+    this.data = data
   }
 }
 
@@ -22,7 +25,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = await response.json().catch(() => null)
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/login') && !path.startsWith('/bootstrap')) window.dispatchEvent(new Event('ansa:signed-out'))
-    throw new ApiError(data?.error || `Request failed (${response.status}).`, response.status)
+    throw new ApiError(data?.error || `Request failed (${response.status}).`, response.status, data)
   }
   return data as T
 }

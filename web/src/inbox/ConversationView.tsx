@@ -29,7 +29,7 @@ import { api, qs } from '../lib/api'
 import { fileSize, fullTime, messageTime, STATUS_LABEL } from '../lib/format'
 import { useDebounced, useDocumentTitle, useHotkeys, useMailboxes, useSession, useTags, useUsers } from '../lib/hooks'
 import type { Attachment, Conversation, ConversationSummary, Status, Thread, Viewer } from '../lib/types'
-import { Avatar, Button, EmptyState, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
+import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
 import { STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
 import { LightboxProvider, isImageType, useLightbox, type LightboxImage } from './Lightbox'
@@ -225,6 +225,16 @@ const STATUS_PILL: Record<string, string> = {
 const STATUS_HINT: Record<string, string> = { active: 'needs a reply', pending: 'waiting on them', closed: 'done' }
 // With four statuses the names say it all, except for the first one.
 const STATUS_HINT_FOUR: Record<string, string> = { active: 'new or in progress', waiting: '', pending: '', closed: '' }
+/** "Tyler replying · Maya viewing", or counts when a group has more than one person. */
+function presenceLabel(viewers: Viewer[]): string {
+  const part = (state: Viewer['state']) => {
+    const people = viewers.filter((v) => v.state === state)
+    if (people.length === 0) return ''
+    return `${people.length === 1 ? people[0].name.split(' ')[0] : people.length} ${state}`
+  }
+  return [part('replying'), part('viewing')].filter(Boolean).join(' · ')
+}
+
 const MAX_TAGS = 3
 
 function Header({
@@ -308,15 +318,9 @@ function Header({
       {/* Properties */}
       <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
         {viewers.length > 0 && (
-          <div className="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-warn-soft py-0.5 pr-2.5 pl-1 text-xs font-medium text-warn" role="status">
-            <span className="flex -space-x-1.5">
-              {viewers.slice(0, 3).map((v) => (
-                <Avatar key={v.userId} name={v.name} color={v.color} size={20} className="ring-2 ring-warn-soft" />
-              ))}
-            </span>
-            <span className="hidden sm:inline">
-              {viewers.length === 1 ? viewers[0].name.split(' ')[0] : `${viewers.length} people`} {viewers.some((v) => v.state === 'replying') ? 'replying' : 'viewing'}
-            </span>
+          <div className="flex h-7 shrink-0 items-center gap-1.5 text-xs font-medium text-fg-2" role="status">
+            <PresenceAvatars viewers={viewers} />
+            <span className="hidden 2xl:inline">{presenceLabel(viewers)}</span>
           </div>
         )}
 

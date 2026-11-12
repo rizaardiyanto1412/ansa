@@ -166,6 +166,35 @@ export function Avatar({ name, color, size = 28, className }: { name: string; co
   )
 }
 
+/**
+ * Teammates who have a conversation open. A grey ring means the person is reading.
+ * An accent ring with moving dots means the person is writing a reply.
+ */
+export function PresenceAvatars({ viewers, size = 20, max = 3, className }: { viewers: { userId: number; name: string; color: string; state: 'viewing' | 'replying' }[]; size?: number; max?: number; className?: string }) {
+  if (viewers.length === 0) return null
+  // People who write come first: they are the ones to know about.
+  const sorted = [...viewers].sort((a, b) => Number(b.state === 'replying') - Number(a.state === 'replying'))
+  const shown = sorted.slice(0, max)
+  const label = sorted.map((v) => `${v.name} is ${v.state === 'replying' ? 'writing a reply' : 'viewing'}`).join('. ')
+  return (
+    <span className={cx('inline-flex shrink-0 items-center gap-1.5 p-[3px]', className)} role="img" aria-label={label}>
+      {shown.map((v) => (
+        <span key={v.userId} className={cx('presence', v.state === 'replying' && 'presence-replying')} title={`${v.name} is ${v.state === 'replying' ? 'writing a reply' : 'viewing'}`}>
+          <Avatar name={v.name} color={v.color} size={size} />
+          {v.state === 'replying' && (
+            <span className="presence-dots" aria-hidden>
+              <i />
+              <i />
+              <i />
+            </span>
+          )}
+        </span>
+      ))}
+      {sorted.length > max && <span className="text-xs font-medium text-fg-3">+{sorted.length - max}</span>}
+    </span>
+  )
+}
+
 export const Spinner = ({ className }: { className?: string }) => <LoaderCircle className={cx('size-4 animate-spin text-fg-3', className)} aria-label="Loading" />
 
 export const Kbd = ({ children }: { children: ReactNode }) => (

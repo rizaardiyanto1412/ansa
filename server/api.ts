@@ -16,13 +16,14 @@ import {
   USER_COLORS,
   type Env,
 } from './auth.ts'
-import { leavePresence, subscribe, touchPresence, viewersOf } from './events.ts'
+import { allViewers, leavePresence, subscribe, touchPresence, viewersOf } from './events.ts'
 import { explainMailError, testSmtp, type MailboxRow } from './mail/outbound.ts'
 import { restartMailbox, syncMailboxNow, testImap } from './mail/imap.ts'
 import { cleanHtml } from './mail/html.ts'
 import {
   addNote,
   addReply,
+  teammateReplyAfter,
   createConversation,
   deleteConversation,
   folderCounts,
@@ -541,6 +542,11 @@ api.delete('/conversations/:id', (c) => {
 api.post('/conversations/:id/reply', async (c) => {
   const id = idParam(c.req.param('id'))
   const data = await body(c)
+  // A teammate may have answered while this reply was written. Say so once, and let the writer decide.
+  if (data.afterThreadId !== undefined && data.force !== true) {
+    const collision = teammateReplyAfter(id, int(data.afterThreadId), c.get('user').id)
+    if (collision) return c.json({ error: `${collision.name} replied while you wrote this.`, collision }, 409)
+  }
   const threadId = addReply(
     id,
     {
@@ -585,6 +591,8 @@ api.post('/conversations/:id/presence', async (c) => {
   touchPresence(idParam(c.req.param('id')), { userId: user.id, name: user.name, color: user.color, state: data.state === 'replying' ? 'replying' : 'viewing' })
   return c.json({ ok: true })
 })
+
+api.get('/presence', (c) => c.json({ viewers: allViewers() }))
 
 api.delete('/conversations/:id/presence', (c) => {
   leavePresence(idParam(c.req.param('id')), c.get('user').id)

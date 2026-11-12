@@ -43,11 +43,21 @@ export function viewersOf(conversationId: number): Viewer[] {
   return [...entries.values()].map(({ seenAt: _seenAt, ...viewer }) => viewer)
 }
 
+/** Everyone who has a conversation open, by conversation. The conversation list shows them on its rows. */
+export function allViewers(): Record<number, Viewer[]> {
+  prunePresence()
+  const all: Record<number, Viewer[]> = {}
+  for (const conversationId of presence.keys()) all[conversationId] = viewersOf(conversationId)
+  return all
+}
+
 export function touchPresence(conversationId: number, viewer: Viewer) {
   let entries = presence.get(conversationId)
   if (!entries) presence.set(conversationId, (entries = new Map()))
   const before = entries.get(viewer.userId)
   entries.set(viewer.userId, { ...viewer, seenAt: Date.now() })
+  // On Cloudflare no timer runs between requests, so each heartbeat also clears out people who left.
+  prunePresence()
   if (!before || before.state !== viewer.state) publish({ type: 'presence', conversationId, viewers: viewersOf(conversationId) })
 }
 

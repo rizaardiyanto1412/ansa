@@ -322,3 +322,59 @@
     margin-top: env(safe-area-inset-top);
   }
 }
+
+/* Who has a conversation open: a grey ring for reading, an accent ring and moving dots for writing. */
+.presence {
+  position: relative;
+  display: inline-flex;
+  border-radius: 9999px;
+  outline: 1.5px solid color-mix(in srgb, var(--fg-3) 60%, transparent);
+  outline-offset: 1.5px;
+}
+.presence-replying {
+  outline-color: var(--accent);
+}
+.presence-dots {
+  position: absolute;
+  right: -7px;
+  bottom: -5px;
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 9px;
+  padding: 0 2.5px;
+  border-radius: 9999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px var(--surface);
+}
+.presence-dots i {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 9999px;
+  background: #fff;
+  animation: presence-dot 1.2s ease-in-out infinite;
+}
+.presence-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.presence-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes presence-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.45;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-1.5px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .presence-dots i {
+    animation: none;
+    opacity: 1;
+  }
+}

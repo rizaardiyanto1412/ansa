@@ -1,10 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bookmark, ChevronDown, Clock, Send, StickyNote, Trash2, X } from 'lucide-react'
-import { api } from '../lib/api'
+import { ApiError, api } from '../lib/api'
 import { useLocalState, useSavedReplies, useSession, useUsers } from '../lib/hooks'
 import type { Conversation, Status, User, Viewer } from '../lib/types'
-import { STATUS_LABEL } from '../lib/format'
+import { STATUS_LABEL, ago } from '../lib/format'
 import { STATUS_DOT, statusOptions } from '../lib/workspace'
 import { Avatar, Banner, Button, Input, MenuItem, MenuLabel, Popover, cx, useFeedback } from '../ui'
 import { AttachButton, EditorArea, EditorToolbar, UploadList, editorHtml, lineHtml, paragraphHtml, useFileDrop, useRichEditor, useUploads } from './Editor'
@@ -38,7 +38,7 @@ export const Composer = forwardRef<
   }
 >(function Composer({ conversation, agentName, othersReplying, open, onOpenChange, onTyping, onSent }, ref) {
   const client = useQueryClient()
-  const { toast } = useFeedback()
+  const { toast, confirm } = useFeedback()
   const [mode, setMode] = useState<'reply' | 'note'>(conversation.draft?.kind ?? 'reply')
   const [storedStatus, setSendStatus] = useLocalState<SendStatus>('ansa-send-status', 'closed')
   // A remembered choice can be one the workspace no longer offers.
@@ -59,13 +59,21 @@ export const Composer = forwardRef<
     if (conversation.draft?.bodyHtml) onOpenChange(true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The newest message that was here when this reply was started. If a teammate answers after it,
+  // the server asks before it sends a second answer to the customer.
+  const newestId = conversation.threads.reduce((max, t) => Math.max(max, t.id), 0)
+  const newestRef = useRef(newestId)
+  newestRef.current = newestId
+  const startedAfter = useRef(newestId)
+  const wasEmpty = useRef(!conversation.draft?.bodyHtml)
+
   const [later, setLater] = useState(false)
   const send = useMutation({
-    mutationFn: ({ status, sendAt, ifNoReply }: { status: SendStatus; sendAt?: number; ifNoReply?: boolean }) => {
+    mutationFn: ({ status, sendAt, ifNoReply, force }: { status: SendStatus; sendAt?: number; ifNoReply?: boolean; force?: boolean }) => {
       const bodyHtml = lineHtml(editorHtml(editor))
       clearTimeout(draftTimer.current)
       return mode === 'reply'
-        ? api.post<{ conversation: Conversation }>(`/conversations/${conversation.id}/reply`, { bodyHtml, status, cc: showCc ? splitEmails(cc) : [], bcc: showBcc ? splitEmails(bcc) : [], attachmentIds: uploads.ids, sendAt, ifNoReply })
+        ? api.post<{ conversation: Conversation }>(`/conversations/${conversation.id}/reply`, { bodyHtml, status, cc: showCc ? splitEmails(cc) : [], bcc: showBcc ? splitEmails(bcc) : [], attachmentIds: uploads.ids, sendAt, ifNoReply, afterThreadId: startedAfter.current, force })
         : api.post<{ conversation: Conversation }>(`/conversations/${conversation.id}/note`, { bodyHtml, attachmentIds: uploads.ids })
     },
     onSuccess: (data, { status, sendAt }) => {
@@ -75,11 +83,21 @@ export const Composer = forwardRef<
       editor?.commands.clearContent()
       uploads.clear()
       onTyping(false)
+      wasEmpty.current = true
       toast(mode === 'note' ? 'Note added' : sendAt ? `Reply scheduled for ${whenLabel(sendAt)}` : 'Reply sent')
       // A scheduled reply changes nothing yet, so the conversation stays open in front of you.
       onSent(mode === 'reply' && !sendAt ? status : null)
     },
-    onError: (err: Error) => toast(err.message, { kind: 'error' }),
+    onError: async (err: Error, variables) => {
+      const collision = err instanceof ApiError && err.status === 409 ? (err.data?.collision as { name: string; at: number } | undefined) : undefined
+      if (!collision) return toast(err.message, { kind: 'error' })
+      const ok = await confirm({
+        title: `${collision.name.split(' ')[0]} replied ${ago(collision.at).replace('Just now', 'just now')}`,
+        body: `${collision.name} sent the customer a reply while you wrote yours. Read it first. If you send, the customer gets both.`,
+        confirmLabel: variables.sendAt ? 'Schedule anyway' : 'Send anyway',
+      })
+      if (ok) send.mutate({ ...variables, force: true })
+    },
   })
 
   const submit = () => {
@@ -137,6 +155,8 @@ export const Composer = forwardRef<
     onKeyDown: (event) => mentionKey(event),
     onCaret: (ed) => trackMention(ed),
     onChange: (html) => {
+      if (html && wasEmpty.current) startedAfter.current = newestRef.current
+      wasEmpty.current = !html
       onTyping(!!html && modeRef.current === 'reply')
       clearTimeout(draftTimer.current)
       draftTimer.current = setTimeout(() => {

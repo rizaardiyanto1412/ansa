@@ -4,9 +4,9 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { ArrowUpDown, Check, ChevronDown, Inbox, Minus, Paperclip, Search, ShieldAlert, Trash2, UserRound, UserRoundCheck, X } from 'lucide-react'
 import { api, qs } from '../lib/api'
 import { plural, shortTime, STATUS_LABEL } from '../lib/format'
-import { useDebounced, useDocumentTitle, useHotkeys, useLocalState, useMailboxes, useSession, useUsers } from '../lib/hooks'
-import type { ConversationSummary, Folder } from '../lib/types'
-import { Avatar, Button, EmptyState, IconButton, Input, MenuItem, Popover, Spinner, StatusBadge, cx, useFeedback, MenuDivider, MenuLabel } from '../ui'
+import { useDebounced, useDocumentTitle, useHotkeys, useLocalState, useMailboxes, usePresence, useSession, useUsers } from '../lib/hooks'
+import type { ConversationSummary, Folder, Viewer } from '../lib/types'
+import { Avatar, Button, EmptyState, PresenceAvatars, IconButton, Input, MenuItem, Popover, Spinner, StatusBadge, cx, useFeedback, MenuDivider, MenuLabel } from '../ui'
 import { FOLDERS } from '../Shell'
 import { STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
 import { ConversationView } from './ConversationView'
@@ -32,6 +32,7 @@ export function InboxPage({ search = false }: { search?: boolean }) {
   const navigate = useNavigate()
   const client = useQueryClient()
   const { user } = useSession()
+  const presence = usePresence()
   const { toast, confirm } = useFeedback()
   const mailboxes = useMailboxes()
   const users = useUsers()
@@ -297,7 +298,7 @@ export function InboxPage({ search = false }: { search?: boolean }) {
             </div>
             <ul>
               {items.map((c) => (
-                <Row key={c.id} conversation={c} to={`${base}/${c.id}${suffix}`} checked={checked.has(c.id)} onCheck={() => toggle(c.id)} showMailbox={search} folder={search ? null : folder} />
+                <Row key={c.id} conversation={c} to={`${base}/${c.id}${suffix}`} checked={checked.has(c.id)} onCheck={() => toggle(c.id)} showMailbox={search} folder={search ? null : folder} viewers={(presence[c.id] ?? []).filter((v) => v.userId !== user.id)} />
               ))}
             </ul>
             {list.hasNextPage ? (
@@ -337,7 +338,7 @@ function CheckBox({ checked, mixed, label, onClick }: { checked: boolean; mixed?
   )
 }
 
-function Row({ conversation: c, to, checked, onCheck, showMailbox, folder }: { conversation: ConversationSummary; to: string; checked: boolean; onCheck: () => void; showMailbox: boolean; folder: Folder | null }) {
+function Row({ conversation: c, to, checked, onCheck, showMailbox, folder, viewers }: { conversation: ConversationSummary; to: string; checked: boolean; onCheck: () => void; showMailbox: boolean; folder: Folder | null; viewers: Viewer[] }) {
   const waiting = (c.status === 'active' || c.status === 'waiting') && !!c.waitingSince
   const openFolder = folder === 'unassigned' || folder === 'mine' || folder === 'assigned' || folder === 'mentioned'
   const showStatus = folder === null || folder === 'all' || ((c.status === 'pending' || (c.status === 'waiting' && workspace().fourStatuses)) && folder !== 'closed' && folder !== 'pending') || folder === 'snoozed'
@@ -354,6 +355,7 @@ function Row({ conversation: c, to, checked, onCheck, showMailbox, folder }: { c
         <span className="col-span-2 row-start-2 min-w-0 md:col-span-1 md:row-start-auto">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={cx('truncate text-[13px]', waiting ? 'font-semibold text-fg' : 'font-medium text-fg')}>{c.subject || '(no subject)'}</span>
+            <PresenceAvatars viewers={viewers} size={16} max={2} className="md:hidden" />
             {showStatus && <StatusBadge status={c.status} />}
             {showMailbox && <span className="inline-flex h-5 shrink-0 items-center rounded-md bg-sunken px-1.5 text-xs font-medium text-fg-2 group-hover:bg-hover">{c.mailboxName}</span>}
             {c.tags.slice(0, 3).map((t) => (
@@ -367,6 +369,7 @@ function Row({ conversation: c, to, checked, onCheck, showMailbox, folder }: { c
           <span className="mt-0.5 block truncate text-[13px] text-fg-3">{c.preview || 'No message text'}</span>
         </span>
         <span className="hidden items-center justify-end gap-2 md:flex">
+          <PresenceAvatars viewers={viewers} />
           {c.hasAttachments && <Paperclip className="size-3.5 shrink-0 text-fg-3" aria-label="Has attachments" />}
           {showAssignee && <Avatar name={c.assignee!.name} color={c.assignee!.color} size={20} />}
           {c.threadCount > 1 && (
