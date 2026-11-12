@@ -298,6 +298,20 @@ const migrations: string[] = [
   ALTER TABLE threads ADD COLUMN send_at INTEGER;
   CREATE INDEX threads_send_at ON threads(send_at) WHERE send_at IS NOT NULL;
   `,
+  `
+  -- A teammate can keep a reply draft and a note draft on one conversation at the same time.
+  CREATE TABLE drafts_by_kind (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'reply',
+    body_html TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, user_id, kind)
+  );
+  INSERT INTO drafts_by_kind SELECT conversation_id, user_id, kind, body_html, updated_at FROM drafts;
+  DROP TABLE drafts;
+  ALTER TABLE drafts_by_kind RENAME TO drafts;
+  `,
 ]
 
 export function migrate() {

@@ -23,6 +23,7 @@ import {
   Trash2,
   UserRound,
   X,
+  Pencil,
   Clock,
 } from 'lucide-react'
 import { api, qs } from '../lib/api'
@@ -31,6 +32,7 @@ import { useDebounced, useDocumentTitle, useHotkeys, useMailboxes, useSession, u
 import type { Attachment, Conversation, ConversationSummary, Status, Thread, Viewer } from '../lib/types'
 import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
+import { lineHtml } from './Editor'
 import { STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
 import { LightboxProvider, isImageType, useLightbox, type LightboxImage } from './Lightbox'
 import { whenLabel } from './SendLater'
@@ -47,8 +49,9 @@ export function ConversationView({ id, onBack, onDone }: { id: number; onBack: (
   const [panel, setPanel] = useState(false)
   const [typing, setTyping] = useState(false)
   const [merging, setMerging] = useState(false)
-  // The composer stays closed until someone asks to write. An unsent draft reopens it.
+  // The composer stays closed until someone asks to write. An unsent draft waits in the thread as a card.
   const [composing, setComposing] = useState(false)
+  const [composeMode, setComposeMode] = useState<'reply' | 'note'>('reply')
   const openComposer = (mode: 'reply' | 'note') => {
     // Show it first, in the same tick: a hidden editor cannot take focus, and the next keys must land in it.
     flushSync(() => setComposing(true))
@@ -166,13 +169,14 @@ export function ConversationView({ id, onBack, onDone }: { id: number; onBack: (
           onTogglePanel={() => setPanel((open) => !open)}
         />
         <LightboxProvider images={images}>
-          <ThreadList conversation={conversation} composing={composing} onCompose={openComposer} />
+          <ThreadList conversation={conversation} composing={composing} editing={composing ? composeMode : null} onCompose={openComposer} />
         </LightboxProvider>
         <Composer
           key={conversation.id}
           ref={composer}
           open={composing}
           onOpenChange={setComposing}
+          onMode={setComposeMode}
           conversation={conversation}
           agentName={user.name}
           othersReplying={viewers.filter((v) => v.state === 'replying')}
@@ -656,7 +660,9 @@ function dayLabel(ts: number): string {
   return days === 0 ? `Today, ${short}` : days === 1 ? `Yesterday, ${short}` : short
 }
 
-function ThreadList({ conversation, composing, onCompose }: { conversation: Conversation; composing: boolean; onCompose: (mode: 'reply' | 'note') => void }) {
+function ThreadList({ conversation, composing, editing, onCompose }: { conversation: Conversation; composing: boolean; editing: 'reply' | 'note' | null; onCompose: (mode: 'reply' | 'note') => void }) {
+  // A draft that is open in the composer is not shown a second time.
+  const drafts = conversation.drafts.filter((d) => d.kind !== editing).sort((a, b) => Number(a.kind === 'note') - Number(b.kind === 'note'))
   const scroller = useRef<HTMLDivElement>(null)
   const lastId = conversation.threads[conversation.threads.length - 1]?.id
   // Every message starts open. Click a name to fold one away; the choice resets when another conversation opens.
@@ -664,7 +670,7 @@ function ThreadList({ conversation, composing, onCompose }: { conversation: Conv
   useLayoutEffect(() => {
     const el = scroller.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [conversation.id, lastId, composing])
+  }, [conversation.id, lastId, composing, drafts.length])
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -701,6 +707,9 @@ function ThreadList({ conversation, composing, onCompose }: { conversation: Conv
               </Fragment>
             )
           })}
+          {drafts.map((draft) => (
+            <DraftCard key={draft.kind} conversationId={conversation.id} draft={draft} onEdit={() => onCompose(draft.kind)} />
+          ))}
         </ol>
       </div>
       {!composing && (
@@ -777,6 +786,40 @@ function trimBlankEdges(html: string): string {
   trim(template.content, 'lastChild')
   trim(template.content, 'firstChild')
   return template.innerHTML
+}
+
+/** Text you wrote and did not send. It waits here, and only you see it, until you edit or discard it. */
+function DraftCard({ conversationId, draft, onEdit }: { conversationId: number; draft: Conversation['drafts'][number]; onEdit: () => void }) {
+  const client = useQueryClient()
+  const { toast } = useFeedback()
+  const isNote = draft.kind === 'note'
+  const discard = useMutation({
+    mutationFn: () => api.put(`/conversations/${conversationId}/draft`, { kind: draft.kind, bodyHtml: '' }),
+    onSuccess: () => {
+      client.setQueryData(['conversation', conversationId], (old: any) => (old ? { ...old, conversation: { ...old.conversation, drafts: old.conversation.drafts.filter((d: any) => d.kind !== draft.kind) } } : old))
+      toast('Draft discarded')
+    },
+    onError: (err: Error) => toast(err.message, { kind: 'error' }),
+  })
+  return (
+    <li className="md:px-14">
+      <article aria-label={isNote ? 'Your note draft' : 'Your reply draft'} className={cx('rounded-xl border border-dashed px-5 pt-4 pb-5 md:px-12 lg:px-20', isNote ? 'border-note-fg/40 bg-note' : 'border-line-strong bg-surface')}>
+        <header className="flex flex-wrap items-center gap-2">
+          <span className={cx('rounded-md px-1.5 py-0.5 text-xs font-semibold', isNote ? 'bg-note-line text-note-fg' : 'bg-sunken text-fg-2')}>{isNote ? 'Note draft' : 'Draft'}</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-fg-3">
+            Only you see this · saved <time dateTime={new Date(draft.updatedAt).toISOString()}>{messageTime(draft.updatedAt)}</time>
+          </span>
+          <Button size="sm" icon={<Pencil className="size-3.5" aria-hidden />} onClick={onEdit}>
+            Edit
+          </Button>
+          <Button size="sm" loading={discard.isPending} onClick={() => discard.mutate()}>
+            Discard
+          </Button>
+        </header>
+        <div className={cx('prose-mail mt-3 border-t pt-4', isNote ? 'border-note-line' : 'border-line')} dangerouslySetInnerHTML={{ __html: lineHtml(draft.bodyHtml) }} />
+      </article>
+    </li>
+  )
 }
 
 function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean; onToggle: () => void }) {

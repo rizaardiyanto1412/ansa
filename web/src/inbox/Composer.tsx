@@ -33,13 +33,15 @@ export const Composer = forwardRef<
     /** The composer is hidden until someone starts a reply or a note. It stays mounted so a draft and the cursor survive. */
     open: boolean
     onOpenChange: (open: boolean) => void
+    /** Reports whether the composer holds a reply or a note, so the thread can hide that draft while it is edited. */
+    onMode: (mode: 'reply' | 'note') => void
     onTyping: (typing: boolean) => void
     onSent: (status: SendStatus | null) => void
   }
->(function Composer({ conversation, agentName, othersReplying, open, onOpenChange, onTyping, onSent }, ref) {
+>(function Composer({ conversation, agentName, othersReplying, open, onOpenChange, onMode, onTyping, onSent }, ref) {
   const client = useQueryClient()
   const { toast, confirm } = useFeedback()
-  const [mode, setMode] = useState<'reply' | 'note'>(conversation.draft?.kind ?? 'reply')
+  const [mode, setModeState] = useState<'reply' | 'note'>('reply')
   const [storedStatus, setSendStatus] = useLocalState<SendStatus>('ansa-send-status', 'closed')
   // A remembered choice can be one the workspace no longer offers.
   const sendStatus: SendStatus = (statusOptions() as SendStatus[]).includes(storedStatus) ? storedStatus : 'closed'
@@ -52,12 +54,25 @@ export const Composer = forwardRef<
   const [filter, setFilter] = useState('')
   const draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const modeRef = useRef(mode)
-  modeRef.current = mode
+  const setMode = (next: 'reply' | 'note') => {
+    modeRef.current = next
+    setModeState(next)
+    onMode(next)
+  }
 
-  // An unsent draft reopens the composer when the conversation loads.
-  useEffect(() => {
-    if (conversation.draft?.bodyHtml) onOpenChange(true)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Drafts. Text you have not sent is saved as you type, one draft for a reply and one for a note.
+  // A saved draft shows in the thread as a card; the composer itself starts empty.
+  const draftOf = (kind: 'reply' | 'note') => conversation.drafts.find((d) => d.kind === kind)?.bodyHtml ?? ''
+  const putDraft = (kind: 'reply' | 'note', bodyHtml: string) => {
+    client.setQueryData(['conversation', conversation.id], (old: any) =>
+      old ? { ...old, conversation: { ...old.conversation, drafts: [...old.conversation.drafts.filter((d: any) => d.kind !== kind), ...(bodyHtml ? [{ kind, bodyHtml, updatedAt: Date.now() }] : [])] } } : old,
+    )
+    void api.put(`/conversations/${conversation.id}/draft`, { kind, bodyHtml }).catch(() => {})
+  }
+  // True while the composer holds text that belongs to the current mode.
+  const active = useRef(false)
+  // Set while the code itself fills or empties the editor, so that this does not count as typing.
+  const quiet = useRef(false)
 
   // The newest message that was here when this reply was started. If a teammate answers after it,
   // the server asks before it sends a second answer to the customer.
@@ -65,7 +80,7 @@ export const Composer = forwardRef<
   const newestRef = useRef(newestId)
   newestRef.current = newestId
   const startedAfter = useRef(newestId)
-  const wasEmpty = useRef(!conversation.draft?.bodyHtml)
+  const wasEmpty = useRef(true)
 
   const [later, setLater] = useState(false)
   const send = useMutation({
@@ -80,10 +95,10 @@ export const Composer = forwardRef<
       client.setQueryData(['conversation', conversation.id], (old: any) => (old ? { ...old, conversation: data.conversation } : old))
       void client.invalidateQueries({ queryKey: ['conversations'] })
       void client.invalidateQueries({ queryKey: ['mailboxes'] })
-      editor?.commands.clearContent()
+      fill('')
+      active.current = false
       uploads.clear()
       onTyping(false)
-      wasEmpty.current = true
       toast(mode === 'note' ? 'Note added' : sendAt ? `Reply scheduled for ${whenLabel(sendAt)}` : 'Reply sent')
       // A scheduled reply changes nothing yet, so the conversation stays open in front of you.
       onSent(mode === 'reply' && !sendAt ? status : null)
@@ -149,38 +164,49 @@ export const Composer = forwardRef<
 
   const customerName = conversation.customer.name || conversation.customer.email
   const editor = useRichEditor({
-    content: paragraphHtml(conversation.draft?.bodyHtml ?? ''),
     placeholder: mode === 'reply' ? `Reply to ${customerName}` : 'Write a note for your team. Type @ to mention a teammate',
     onSubmit: () => submitRef.current(),
     onKeyDown: (event) => mentionKey(event),
     onCaret: (ed) => trackMention(ed),
     onChange: (html) => {
+      if (quiet.current) return
       if (html && wasEmpty.current) startedAfter.current = newestRef.current
       wasEmpty.current = !html
       onTyping(!!html && modeRef.current === 'reply')
       clearTimeout(draftTimer.current)
-      draftTimer.current = setTimeout(() => {
-        void api.put(`/conversations/${conversation.id}/draft`, { kind: modeRef.current, bodyHtml: html }).catch(() => {})
-      }, 700)
+      draftTimer.current = setTimeout(() => putDraft(modeRef.current, html), 700)
     },
   })
   useEffect(() => () => clearTimeout(draftTimer.current), [])
 
-  // A draft that appears while the editor is empty came from a scheduled reply someone took back: show it.
-  const draftHtml = conversation.draft?.bodyHtml ?? ''
-  const hadDraft = useRef(!!draftHtml)
-  useEffect(() => {
-    if (draftHtml && !hadDraft.current && editor?.isEmpty) {
-      setMode('reply')
-      editor.commands.setContent(paragraphHtml(draftHtml))
-      onOpenChange(true)
-    }
-    hadDraft.current = !!draftHtml
-  }, [draftHtml, editor]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** Put text into the editor, or empty it, without saving a draft for it. */
+  const fill = (html: string) => {
+    if (!editor) return
+    quiet.current = true
+    if (html) editor.commands.setContent(paragraphHtml(html))
+    else editor.commands.clearContent()
+    quiet.current = false
+    wasEmpty.current = !html
+    if (html) startedAfter.current = newestRef.current
+  }
 
   useImperativeHandle(ref, () => ({
     focus: (next) => {
-      setMode(next)
+      if (!active.current || next !== modeRef.current) {
+        // Changing from a reply to a note, or back: what was written stays behind as a draft.
+        if (active.current) {
+          clearTimeout(draftTimer.current)
+          const html = editorHtml(editor)
+          if (html) putDraft(modeRef.current, html)
+          uploads.clear()
+        }
+        // Continue the saved draft of this kind, if there is one.
+        const saved = draftOf(next)
+        setMode(next)
+        fill(saved)
+        active.current = true
+        onTyping(next === 'reply' && !!saved)
+      }
       // Focus now, not on the next frame: keys typed right after the shortcut must land in the editor.
       // (TipTap's own focus command waits for an animation frame, so focus the DOM node first.)
       editor?.view.dom.focus()
@@ -188,12 +214,14 @@ export const Composer = forwardRef<
     },
   }))
 
-  const discard = () => {
+  /** Close the composer. The text stays in the thread as a draft, or goes away. */
+  const close = (keep: boolean) => {
     clearTimeout(draftTimer.current)
-    editor?.commands.clearContent()
+    putDraft(mode, keep ? editorHtml(editor) : '')
+    fill('')
+    active.current = false
     uploads.clear()
     onTyping(false)
-    void api.put(`/conversations/${conversation.id}/draft`, { kind: mode, bodyHtml: '' }).catch(() => {})
     onOpenChange(false)
   }
 
@@ -338,7 +366,10 @@ export const Composer = forwardRef<
             </EditorToolbar>
 
             <div className="ml-auto flex items-center">
-              <button type="button" aria-label="Discard draft" title="Discard draft" onClick={discard} className={tool}>
+              <button type="button" onClick={() => close(true)} title="Close this box and keep the text as a draft" className="mr-0.5 flex h-8 shrink-0 items-center rounded-md px-2 text-[13px] font-medium text-fg-2 transition-colors hover:bg-black/5 dark:hover:bg-white/10">
+                Save draft
+              </button>
+              <button type="button" aria-label="Discard draft" title="Discard draft" onClick={() => close(false)} className={tool}>
                 <Trash2 className="size-4" aria-hidden />
               </button>
               {isNote ? (

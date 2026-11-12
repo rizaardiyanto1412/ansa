@@ -499,7 +499,7 @@ test('send later: a scheduled reply waits, goes out when due, and holds back if 
   conversations.cancelScheduled(tc, actor)
   conv = conversations.getConversation(c, { userId: agentId })
   assert.ok(!conv.threads.some((t) => t.id === tc))
-  assert.deepEqual([conv.draft?.bodyHtml, conv.threadCount], ['<div>Reminder</div>', 2])
+  assert.deepEqual([conv.drafts[0]?.bodyHtml, conv.threadCount], ['<div>Reminder</div>', 2])
   assert.throws(() => conversations.sendScheduledNow(tc, actor), /not waiting/)
 })
 
@@ -516,4 +516,17 @@ test('collision check: a teammate reply sent after you started writing is report
   conversations.addReply(id, { bodyHtml: '<div>Fixed</div>' }, { userId: other, via: 'web' })
   assert.equal(conversations.teammateReplyAfter(id, started, agentId)?.name, 'Tyler Teammate')
   assert.equal(conversations.teammateReplyAfter(id, started, other), null, 'your own reply is not a collision')
+})
+
+test('drafts: a reply draft and a note draft live side by side, and each goes away with its own kind', async () => {
+  const id = conversations.createConversation({ mailboxId, customerEmail: 'drafts@acme.test', subject: 'Drafts', bodyHtml: '<p>Help</p>', kind: 'customer' }, { userId: null, via: 'email' }).id
+  const mine = () => conversations.getConversation(id, { userId: agentId }).drafts.map((d) => [d.kind, d.bodyHtml])
+  conversations.saveDraft(id, agentId, 'reply', '<p>Answer</p>')
+  conversations.saveDraft(id, agentId, 'note', '<p>Check billing</p>')
+  assert.deepEqual(mine(), [['reply', '<p>Answer</p>'], ['note', '<p>Check billing</p>']])
+  conversations.saveDraft(id, agentId, 'note', '')
+  assert.deepEqual(mine(), [['reply', '<p>Answer</p>']])
+  conversations.saveDraft(id, agentId, 'note', '<p>Again</p>')
+  conversations.addReply(id, { bodyHtml: '<div>Answer</div>' }, { userId: agentId, via: 'web' })
+  assert.deepEqual(mine(), [['note', '<p>Again</p>']], 'sending the reply keeps the note draft')
 })

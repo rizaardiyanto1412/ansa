@@ -137,7 +137,8 @@ export interface Conversation extends Omit<ConversationSummary, 'customer'> {
   customer: Customer
   threads: Thread[]
   previousConversations: { id: number; subject: string; status: Status; updatedAt: number }[]
-  draft: { kind: 'reply' | 'note'; bodyHtml: string } | null
+  /** Your own unsent text on this conversation: at most one reply and one note. */
+  drafts: { kind: 'reply' | 'note'; bodyHtml: string; updatedAt: number }[]
   url: string
 }
 

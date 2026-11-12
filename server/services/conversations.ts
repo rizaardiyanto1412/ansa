@@ -248,13 +248,18 @@ export function getConversation(id: number, opts: { userId?: number } = {}) {
   const summary = getSummary(id)
   const customer = getCustomer(summary.customer.id)
   const previous = listConversations({ customerId: customer.id, limit: 8 }).items.filter((c) => c.id !== id)
-  const draft = opts.userId ? get<any>('SELECT kind, body_html FROM drafts WHERE conversation_id = ? AND user_id = ?', id, opts.userId) : undefined
+  // The reader's own unsent text: at most one reply and one note. The reply comes first.
+  const drafts = (opts.userId ? all<any>('SELECT kind, body_html, updated_at FROM drafts WHERE conversation_id = ? AND user_id = ? ORDER BY kind DESC', id, opts.userId) : []).map((d) => ({
+    kind: d.kind as 'reply' | 'note',
+    bodyHtml: d.body_html as string,
+    updatedAt: d.updated_at as number,
+  }))
   return {
     ...summary,
     customer,
     threads: listThreads(id),
     previousConversations: previous.map((c) => ({ id: c.id, subject: c.subject, status: c.status, updatedAt: c.updatedAt })),
-    draft: draft ? { kind: draft.kind as 'reply' | 'note', bodyHtml: draft.body_html as string } : null,
+    drafts,
     url: `${config.appUrl}/c/${id}`,
   }
 }
@@ -479,7 +484,7 @@ export function addReply(conversationId: number, input: ReplyInput, actor: Actor
     if (sendAt) {
       // Nothing went to the customer yet, so the status and the timers stay as they are until it does.
       run('UPDATE conversations SET thread_count = thread_count + 1, assignee_id = ?, updated_at = ? WHERE id = ?', assignee, at, conversationId)
-      if (actor.userId) run('DELETE FROM drafts WHERE conversation_id = ? AND user_id = ?', conversationId, actor.userId)
+      if (actor.userId) run(`DELETE FROM drafts WHERE conversation_id = ? AND user_id = ? AND kind = 'reply'`, conversationId, actor.userId)
       reindex(conversationId)
       return id
     }
@@ -489,7 +494,7 @@ export function addReply(conversationId: number, input: ReplyInput, actor: Actor
       return id
     }
     markReplied(conversationId, { status, assignee, cc, text, at, closedBy: actor.userId })
-    if (actor.userId) run('DELETE FROM drafts WHERE conversation_id = ? AND user_id = ?', conversationId, actor.userId)
+    if (actor.userId) run(`DELETE FROM drafts WHERE conversation_id = ? AND user_id = ? AND kind = 'reply'`, conversationId, actor.userId)
     reindex(conversationId)
     return id
   })
@@ -557,7 +562,7 @@ export function cancelScheduled(threadId: number, actor: Actor) {
   tx(() => {
     if (t.user_id) {
       run(
-        `INSERT INTO drafts (conversation_id, user_id, kind, body_html, updated_at) VALUES (?, ?, 'reply', ?, ?) ON CONFLICT(conversation_id, user_id) DO NOTHING`,
+        `INSERT INTO drafts (conversation_id, user_id, kind, body_html, updated_at) VALUES (?, ?, 'reply', ?, ?) ON CONFLICT(conversation_id, user_id, kind) DO NOTHING`,
         t.conversation_id,
         t.user_id,
         t.body_html,
@@ -927,12 +932,12 @@ export function wakeSnoozed() {
 export function saveDraft(conversationId: number, userId: number, kind: 'reply' | 'note', bodyHtml: string) {
   const clean = cleanHtml(bodyHtml)
   if (!htmlToText(clean).trim()) {
-    run('DELETE FROM drafts WHERE conversation_id = ? AND user_id = ?', conversationId, userId)
+    run('DELETE FROM drafts WHERE conversation_id = ? AND user_id = ? AND kind = ?', conversationId, userId, kind)
     return
   }
   run(
     `INSERT INTO drafts (conversation_id, user_id, kind, body_html, updated_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(conversation_id, user_id) DO UPDATE SET kind = excluded.kind, body_html = excluded.body_html, updated_at = excluded.updated_at`,
+     ON CONFLICT(conversation_id, user_id, kind) DO UPDATE SET body_html = excluded.body_html, updated_at = excluded.updated_at`,
     conversationId,
     userId,
     kind,
