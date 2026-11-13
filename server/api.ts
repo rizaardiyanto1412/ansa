@@ -430,6 +430,8 @@ api.post('/mailboxes/test', requireAdmin, async (c) => {
 })
 
 api.post('/mailboxes/:id/sync', async (c) => {
+  // Fetching mail can send a mailbox's auto reply, and an internal token must not decide which one goes out.
+  if (c.get('access') === 'internal') throw new AppError("This token is internal only. It can't check for new mail.", 403)
   await syncMailboxNow(idParam(c.req.param('id')))
   return c.json({ ok: true })
 })
