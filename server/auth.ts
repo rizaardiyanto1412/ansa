@@ -18,7 +18,9 @@ export interface User {
   createdAt: number
 }
 
-export type Env = { Variables: { user: User; via: 'web' | 'api' } }
+export type TokenAccess = 'full' | 'internal'
+
+export type Env = { Variables: { user: User; via: 'web' | 'api'; access: TokenAccess } }
 
 export function serializeUser(row: any): User {
   return {
@@ -69,23 +71,24 @@ export function userFromSession(c: Context): User | null {
   return row ? serializeUser(row) : null
 }
 
-export function userFromBearer(header: string | undefined | null): User | null {
+export function userFromBearer(header: string | undefined | null): { user: User; access: TokenAccess } | null {
   const match = /^Bearer\s+(\S+)$/i.exec(header || '')
   if (!match) return null
   const row = get<any>(
-    'SELECT u.*, t.id AS token_id FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND u.disabled = 0',
+    'SELECT u.*, t.id AS token_id, t.access AS token_access FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND u.disabled = 0',
     sha256(match[1]),
   )
   if (!row) return null
   run('UPDATE api_tokens SET last_used_at = ? WHERE id = ?', now(), row.token_id)
-  return serializeUser(row)
+  return { user: serializeUser(row), access: row.token_access === 'internal' ? 'internal' : 'full' }
 }
 
 /** Accepts a browser session or an API token. Browser writes must carry X-Requested-With (CSRF guard). */
 export const requireAuth: MiddlewareHandler<Env> = async (c, next) => {
   const bearer = userFromBearer(c.req.header('authorization'))
   if (bearer) {
-    c.set('user', bearer)
+    c.set('user', bearer.user)
+    c.set('access', bearer.access)
     c.set('via', 'api')
     return next()
   }
@@ -96,10 +99,12 @@ export const requireAuth: MiddlewareHandler<Env> = async (c, next) => {
   }
   c.set('user', user)
   c.set('via', 'web')
+  c.set('access', 'full')
   return next()
 }
 
 export const requireAdmin: MiddlewareHandler<Env> = async (c, next) => {
+  if (c.get('access') === 'internal') return c.json({ error: "This token is internal only. It can't change settings." }, 403)
   if (c.get('user').role !== 'admin') return c.json({ error: 'Only admins can do that.' }, 403)
   return next()
 }

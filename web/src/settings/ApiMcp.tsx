@@ -32,6 +32,11 @@ export function CodeBlock({ code, label }: { code: string; label: string }) {
   )
 }
 
+const ACCESS_OPTIONS: { value: ApiToken['access']; label: string; description: string }[] = [
+  { value: 'full', label: 'Full access', description: 'Acts as you, and can email customers.' },
+  { value: 'internal', label: 'Internal only', description: "Reads conversations, adds notes, tags and assigns. Can't email customers or change settings." },
+]
+
 const CLIENTS = ['Claude Code', 'Claude Desktop', 'Cursor', 'Other'] as const
 
 const TOOLS: [string, string][] = [
@@ -57,10 +62,11 @@ export function ApiSettings() {
   const { toast, confirm } = useFeedback()
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: () => api.get<{ tokens: ApiToken[] }>('/tokens').then((r) => r.tokens) })
   const [name, setName] = useState('')
+  const [access, setAccess] = useState<ApiToken['access']>('full')
   const [secret, setSecret] = useState<string | null>(null)
   const [tab, setTab] = useState<(typeof CLIENTS)[number]>('Claude Code')
   const create = useMutation({
-    mutationFn: () => api.post<{ secret: string }>('/tokens', { name: name.trim() || 'MCP' }),
+    mutationFn: () => api.post<{ secret: string }>('/tokens', { name: name.trim() || 'MCP', access }),
     onSuccess: (data) => {
       setSecret(data.secret)
       setName('')
@@ -91,7 +97,7 @@ export function ApiSettings() {
 
       <Card className="p-5">
         <h2 className="text-[15px] font-semibold">Access tokens</h2>
-        <p className="mt-0.5 text-[13px] text-fg-3">A token can do everything you can. Create one for each tool, and revoke it when you stop using the tool.</p>
+        <p className="mt-0.5 text-[13px] text-fg-3">Choose what each token can do. Create one for each tool, and revoke it when you stop using the tool.</p>
         <form
           className="mt-4 flex flex-wrap items-end gap-3"
           onSubmit={(e) => {
@@ -99,6 +105,25 @@ export function ApiSettings() {
             create.mutate()
           }}
         >
+          <div className="w-full">
+            <p className="mb-2 text-[13px] font-medium">Access</p>
+            <div className="flex flex-wrap gap-3" role="radiogroup" aria-label="Token access">
+              {ACCESS_OPTIONS.map((option) => (
+                <div key={option.value} className="min-w-48 flex-1">
+                  <Button
+                    role="radio"
+                    aria-checked={access === option.value}
+                    aria-describedby={`access-${option.value}`}
+                    onClick={() => setAccess(option.value)}
+                    className={cx(access === option.value && 'border-accent bg-accent-soft text-accent-fg')}
+                  >
+                    {option.label}
+                  </Button>
+                  <p id={`access-${option.value}`} className="mt-1 text-[13px] text-fg-3">{option.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
           <Field label="Token name" className="min-w-48 flex-1">
             {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Claude Code on my laptop" />}
           </Field>
@@ -122,7 +147,10 @@ export function ApiSettings() {
               {tokens.data?.map((t) => (
                 <li key={t.id} className="flex items-center gap-3 px-3.5 py-2.5">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{t.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium">{t.name}</p>
+                      {t.access === 'internal' && <span className="inline-flex h-5 shrink-0 items-center rounded-md bg-sunken px-1.5 text-xs font-medium whitespace-nowrap text-fg-2">Internal only</span>}
+                    </div>
                     <p className="text-[13px] text-fg-3">
                       <span className="font-mono text-xs">{t.prefix}…</span> · created {dateOnly(t.createdAt)} · {t.lastUsedAt ? `last used ${ago(t.lastUsedAt).toLowerCase()}` : 'never used'}
                     </p>
@@ -140,7 +168,7 @@ export function ApiSettings() {
       <Card className="p-5">
         <h2 className="text-[15px] font-semibold">Connect an AI assistant (MCP)</h2>
         <p className="mt-0.5 text-[13px] text-fg-3">
-          {brand()} has a built-in Model Context Protocol server. Connected assistants can read conversations, draft notes and send replies.
+          {brand()} has a built-in Model Context Protocol server. Connected assistants can read conversations and add notes. Full access tokens can also send replies.
           {!secret && ' Create a token above and it is filled in below.'}
         </p>
         <div role="tablist" aria-label="Client" className="mt-4 flex gap-1 border-b border-line">

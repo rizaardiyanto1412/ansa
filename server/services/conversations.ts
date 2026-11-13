@@ -1,3 +1,4 @@
+import type { TokenAccess } from '../auth.ts'
 import { all, allNamed, get, run, tx, now, parseJson } from '../db.ts'
 import { publish } from '../events.ts'
 import { emitAppEvent, type AppEvent } from '../hooks.ts'
@@ -19,6 +20,11 @@ export type Folder = 'unassigned' | 'mine' | 'mentioned' | 'assigned' | 'pending
 export interface Actor {
   userId: number | null
   via: 'web' | 'api' | 'mcp' | 'workflow' | 'email' | 'system' | 'auto'
+  access?: TokenAccess
+}
+
+function assertCanEmail(actor: Actor) {
+  if (actor.access === 'internal') throw new AppError("This token is internal only. It can't email customers.", 403)
 }
 
 const OPEN = `c.status IN ('active', 'waiting', 'pending')`
@@ -440,6 +446,7 @@ export function teammateReplyAfter(conversationId: number, afterThreadId: number
 }
 
 export function addReply(conversationId: number, input: ReplyInput, actor: Actor): number {
+  assertCanEmail(actor)
   const bodyHtml = cleanHtml(input.bodyHtml)
   const text = htmlToText(bodyHtml)
   if (!text.trim() && !input.attachmentIds?.length) throw new AppError('Write a reply before sending.')
@@ -552,6 +559,7 @@ function releaseScheduled(threadId: number, actor: Actor): boolean {
 
 /** Send a scheduled reply now, without waiting for its time. */
 export function sendScheduledNow(threadId: number, actor: Actor) {
+  assertCanEmail(actor)
   if (releaseScheduled(threadId, actor)) queueDelivery(threadId)
 }
 
@@ -910,7 +918,8 @@ export function mergeConversations(sourceId: number, targetId: number, actor: Ac
 }
 
 /** Retry a reply that failed to send. */
-export function retryDelivery(threadId: number) {
+export function retryDelivery(threadId: number, actor: Actor) {
+  assertCanEmail(actor)
   const t = get<any>(`SELECT id, conversation_id FROM threads WHERE id = ? AND type = 'reply' AND state = 'failed'`, threadId)
   if (!t) throw new AppError('That message is not waiting to be re-sent.')
   run(`UPDATE threads SET state = 'sending', error = NULL WHERE id = ?`, threadId)

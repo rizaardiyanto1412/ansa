@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { Actor } from '../services/conversations.ts'
 
 // Every test file gets its own throwaway database. Set before the app modules load.
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ansa-test-'))
@@ -529,4 +530,17 @@ test('drafts: a reply draft and a note draft live side by side, and each goes aw
   conversations.saveDraft(id, agentId, 'note', '<p>Again</p>')
   conversations.addReply(id, { bodyHtml: '<div>Answer</div>' }, { userId: agentId, via: 'web' })
   assert.deepEqual(mine(), [['note', '<p>Again</p>']], 'sending the reply keeps the note draft')
+})
+
+
+test('internal-only tokens can add notes but cannot email customers', () => {
+  const actor: Actor = { userId: agentId, via: 'mcp', access: 'internal' }
+  const input = { mailboxId, customerEmail: 'internal@acme.test', subject: 'Internal token', bodyHtml: '<p>Help</p>' }
+  const { id } = conversations.createConversation({ ...input, kind: 'customer' }, actor)
+  const noteId = conversations.addNote(id, { bodyHtml: '<p>Check with the team</p>' }, actor)
+  assert.equal(conversations.getConversation(id).threads.find((t) => t.id === noteId)?.type, 'note')
+  assert.throws(() => conversations.addReply(id, { bodyHtml: '<p>Answer</p>' }, actor), /internal only/)
+  assert.throws(() => conversations.createConversation({ ...input, kind: 'reply' }, actor), /internal only/)
+  const replyId = conversations.addReply(id, { bodyHtml: '<p>Answer</p>' }, { ...actor, access: 'full' })
+  assert.equal(conversations.getConversation(id).threads.find((t) => t.id === replyId)?.type, 'reply')
 })

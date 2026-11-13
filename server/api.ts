@@ -165,7 +165,7 @@ api.post('/logout', (c) => {
 
 // Everything below needs a signed-in user or an API token.
 api.use('*', requireAuth)
-const actorOf = (c: { get: (key: 'user' | 'via') => any }): Actor => ({ userId: c.get('user').id, via: c.get('via') })
+const actorOf = (c: { get: (key: 'user' | 'via' | 'access') => any }): Actor => ({ userId: c.get('user').id, via: c.get('via'), access: c.get('access') })
 
 // ---------------------------------------------------------------------------------------------
 // Me and team
@@ -602,7 +602,7 @@ api.delete('/conversations/:id/presence', (c) => {
 api.get('/threads/:id/full', (c) => c.json({ html: getQuotedHtml(idParam(c.req.param('id'))) }))
 
 api.post('/threads/:id/retry', (c) => {
-  retryDelivery(idParam(c.req.param('id')))
+  retryDelivery(idParam(c.req.param('id')), actorOf(c))
   return c.json({ ok: true })
 })
 
@@ -913,10 +913,11 @@ api.delete('/workflows/:id', requireAdmin, (c) => {
 
 api.get('/tokens', (c) =>
   c.json({
-    tokens: all<any>('SELECT id, name, prefix, last_used_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY id DESC', c.get('user').id).map((t) => ({
+    tokens: all<any>('SELECT id, name, prefix, access, last_used_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY id DESC', c.get('user').id).map((t) => ({
       id: t.id,
       name: t.name,
       prefix: t.prefix,
+      access: t.access,
       lastUsedAt: t.last_used_at,
       createdAt: t.created_at,
     })),
@@ -927,9 +928,10 @@ api.post('/tokens', async (c) => {
   if (c.get('via') !== 'web') throw new AppError('Create tokens from the web app.', 403)
   const data = await body(c)
   const name = str(data.name, 100) || 'API token'
+  const access = data.access === 'internal' ? 'internal' : 'full'
   const token = `ansa_${randomToken(30)}`
-  const { id } = run('INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)', c.get('user').id, name, sha256(token), token.slice(0, 10), now())
-  return c.json({ token: { id, name, prefix: token.slice(0, 10), lastUsedAt: null, createdAt: now() }, secret: token }, 201)
+  const { id } = run('INSERT INTO api_tokens (user_id, name, token_hash, prefix, access, created_at) VALUES (?, ?, ?, ?, ?, ?)', c.get('user').id, name, sha256(token), token.slice(0, 10), access, now())
+  return c.json({ token: { id, name, prefix: token.slice(0, 10), access, lastUsedAt: null, createdAt: now() }, secret: token }, 201)
 })
 
 api.delete('/tokens/:id', (c) => {

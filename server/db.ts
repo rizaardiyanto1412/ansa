@@ -312,6 +312,7 @@ const migrations: string[] = [
   DROP TABLE drafts;
   ALTER TABLE drafts_by_kind RENAME TO drafts;
   `,
+  `ALTER TABLE api_tokens ADD COLUMN access TEXT NOT NULL DEFAULT 'full';`,
 ]
 
 export function migrate() {
