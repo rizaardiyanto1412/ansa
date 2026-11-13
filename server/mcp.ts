@@ -3,7 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { z } from 'zod'
 import { all } from './db.ts'
 import { config } from './config.ts'
-import type { User } from './auth.ts'
+import type { TokenAccess, User } from './auth.ts'
 import { htmlToText, textToHtml } from './mail/html.ts'
 import {
   addNote,
@@ -84,15 +84,17 @@ const safe =
 
 const STATUS = z.enum(['active', 'waiting', 'pending', 'closed', 'spam'])
 
-function buildServer(user: User) {
-  const actor: Actor = { userId: user.id, via: 'mcp' }
+function buildServer(user: User, access: TokenAccess) {
+  const actor: Actor = { userId: user.id, via: 'mcp', access }
   const server = new McpServer(
     { name: 'ansa', version: '1.0.0' },
     {
       instructions:
         `Ansa is a shared inbox for customer support. You act as ${user.name} (${user.email}). ` +
         'A conversation is one email thread with a customer. Its status is active (needs a reply), pending (waiting on the customer), closed or spam. ' +
-        'reply_to_conversation sends a real email to the customer, so draft carefully and confirm with the user before sending unless told otherwise. ' +
+        (access === 'internal'
+          ? 'This token is internal only and cannot email customers or change settings. Add notes for the team instead. '
+          : 'reply_to_conversation sends a real email to the customer, so draft carefully and confirm with the user before sending unless told otherwise. ') +
         'add_note is internal and safe: customers never see notes.',
     },
   )
@@ -159,27 +161,29 @@ function buildServer(user: User) {
     safe((a) => detail(a.id)),
   )
 
-  server.registerTool(
-    'reply_to_conversation',
-    {
-      title: 'Send a reply to the customer',
-      description:
-        'Email a reply to the customer on an existing conversation. This sends real email. `body` is plain text (blank lines separate paragraphs) or simple HTML. ' +
-        'The signature is added automatically. `status` is what the conversation becomes after sending (default closed; a customer reply reopens it).',
-      inputSchema: {
-        id: z.number().int(),
-        body: z.string().min(1),
-        status: z.enum(['active', 'waiting', 'pending', 'closed']).optional(),
-        cc: z.array(z.string()).optional(),
-        bcc: z.array(z.string()).optional(),
+  if (access !== 'internal') {
+    server.registerTool(
+      'reply_to_conversation',
+      {
+        title: 'Send a reply to the customer',
+        description:
+          'Email a reply to the customer on an existing conversation. This sends real email. `body` is plain text (blank lines separate paragraphs) or simple HTML. ' +
+          'The signature is added automatically. `status` is what the conversation becomes after sending (default closed; a customer reply reopens it).',
+        inputSchema: {
+          id: z.number().int(),
+          body: z.string().min(1),
+          status: z.enum(['active', 'waiting', 'pending', 'closed']).optional(),
+          cc: z.array(z.string()).optional(),
+          bcc: z.array(z.string()).optional(),
+        },
+        annotations: { destructiveHint: false, openWorldHint: true },
       },
-      annotations: { destructiveHint: false, openWorldHint: true },
-    },
-    safe((a) => {
-      addReply(a.id, { bodyHtml: toHtml(a.body), status: a.status, cc: a.cc, bcc: a.bcc }, actor)
-      return { sent: true, conversation: brief(getConversation(a.id)) }
-    }),
-  )
+      safe((a) => {
+        addReply(a.id, { bodyHtml: toHtml(a.body), status: a.status, cc: a.cc, bcc: a.bcc }, actor)
+        return { sent: true, conversation: brief(getConversation(a.id)) }
+      }),
+    )
+  }
 
   server.registerTool(
     'add_note',
@@ -351,8 +355,8 @@ function buildServer(user: User) {
 }
 
 /** Stateless Streamable HTTP endpoint: one fresh server per request, authenticated by an API token. */
-export async function handleMcp(request: Request, user: User): Promise<Response> {
-  const server = buildServer(user)
+export async function handleMcp(request: Request, user: User, access: TokenAccess): Promise<Response> {
+  const server = buildServer(user, access)
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   await server.connect(transport)
   try {

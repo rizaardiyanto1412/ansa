@@ -38,7 +38,7 @@ export function createApp() {
     if (c.req.method !== 'POST') {
       return c.json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. This server is stateless: use POST.' }, id: null }, 405, { Allow: 'POST' })
     }
-    return handleMcp(c.req.raw, user)
+    return handleMcp(c.req.raw, user.user, user.access)
   })
 
   app.route('/api', api)

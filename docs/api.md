@@ -31,6 +31,16 @@ The assistant acts as the teammate who created the token. Revoke the token to cu
 
 `reply_to_conversation` and `create_conversation` (kind `email`) send real email. The server tells assistants to confirm with you first.
 
+## Internal-only tokens
+
+Choose **Internal only** when creating a token in **Settings → API & MCP**. These tokens work with both REST and MCP.
+
+An internal-only token can read conversations, add notes, save drafts, tag, assign, and change status. It can create conversations from notes or customer messages and cancel scheduled replies.
+
+It cannot email customers, schedule replies, send scheduled replies, or retry failed deliveries. It cannot use admin-only routes, change settings, or check a mailbox for new mail. The MCP server hides `reply_to_conversation` and tells assistants to add notes for the team instead.
+
+Existing tokens keep full access.
+
 ## REST API
 
 The web app's JSON API accepts the same token:

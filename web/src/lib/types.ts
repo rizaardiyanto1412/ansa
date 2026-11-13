@@ -179,6 +179,7 @@ export interface Workflow {
 }
 
 export interface ApiToken {
+  access: 'full' | 'internal'
   id: number
   name: string
   prefix: string
