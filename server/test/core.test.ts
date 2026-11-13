@@ -532,7 +532,6 @@ test('drafts: a reply draft and a note draft live side by side, and each goes aw
   assert.deepEqual(mine(), [['note', '<p>Again</p>']], 'sending the reply keeps the note draft')
 })
 
-
 test('internal-only tokens can add notes but cannot email customers', () => {
   const actor: Actor = { userId: agentId, via: 'mcp', access: 'internal' }
   const input = { mailboxId, customerEmail: 'internal@acme.test', subject: 'Internal token', bodyHtml: '<p>Help</p>' }

@@ -105,25 +105,26 @@ export function ApiSettings() {
             create.mutate()
           }}
         >
-          <div className="w-full">
-            <p className="mb-2 text-[13px] font-medium">Access</p>
-            <div className="flex flex-wrap gap-3" role="radiogroup" aria-label="Token access">
+          <fieldset className="w-full">
+            <legend className="mb-2 text-[13px] font-medium">Access</legend>
+            <div className="flex flex-wrap gap-3">
               {ACCESS_OPTIONS.map((option) => (
-                <div key={option.value} className="min-w-48 flex-1">
-                  <Button
-                    role="radio"
-                    aria-checked={access === option.value}
-                    aria-describedby={`access-${option.value}`}
-                    onClick={() => setAccess(option.value)}
-                    className={cx(access === option.value && 'border-accent bg-accent-soft text-accent-fg')}
-                  >
-                    {option.label}
-                  </Button>
-                  <p id={`access-${option.value}`} className="mt-1 text-[13px] text-fg-3">{option.description}</p>
-                </div>
+                <label
+                  key={option.value}
+                  className={cx(
+                    'flex min-w-48 flex-1 cursor-pointer gap-2.5 rounded-lg border p-3 transition-colors',
+                    access === option.value ? 'border-accent bg-accent-soft/60' : 'border-line-strong hover:bg-sunken',
+                  )}
+                >
+                  <input type="radio" name="token-access" value={option.value} checked={access === option.value} onChange={() => setAccess(option.value)} className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" />
+                  <span>
+                    <span className="block text-sm font-medium">{option.label}</span>
+                    <span className="mt-0.5 block text-[13px] text-fg-3">{option.description}</span>
+                  </span>
+                </label>
               ))}
             </div>
-          </div>
+          </fieldset>
           <Field label="Token name" className="min-w-48 flex-1">
             {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Claude Code on my laptop" />}
           </Field>
