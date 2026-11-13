@@ -37,7 +37,7 @@ Choose **Internal only** when creating a token in **Settings → API & MCP**. Th
 
 An internal-only token can read conversations, add notes, save drafts, tag, assign, and change status. It can create conversations from notes or customer messages and cancel scheduled replies.
 
-It cannot email customers, schedule replies, send scheduled replies, or retry failed deliveries. It cannot use admin-only routes or change settings. The MCP server hides `reply_to_conversation` and tells assistants to add notes for the team instead.
+It cannot email customers, schedule replies, send scheduled replies, or retry failed deliveries. It cannot use admin-only routes, change settings, or check a mailbox for new mail. The MCP server hides `reply_to_conversation` and tells assistants to add notes for the team instead.
 
 Existing tokens keep full access.
 
