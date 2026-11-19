@@ -30,6 +30,8 @@ interface DurableObjectState {
     getAlarm(): Promise<number | null>
     setAlarm(time: number): Promise<void>
     deleteAll(): Promise<void>
+    getBookmarkForTime(timestamp: number | Date): Promise<string>
+    onNextSessionRestoreBookmark(bookmark: string): Promise<string>
   }
 }
 interface DurableObjectNamespace {
