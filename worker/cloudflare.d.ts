@@ -17,6 +17,7 @@ interface SqlCursor {
 interface DurableObjectState {
   /** Stop this object now. The next request starts a fresh one with the latest code. Always throws. */
   abort(reason?: string): never
+  waitUntil(promise: Promise<unknown>): void
   acceptWebSocket(socket: WebSocket): void
   getWebSockets(): WebSocket[]
   getWebSocketAutoResponseTimestamp(socket: WebSocket): Date | null
@@ -28,6 +29,7 @@ interface DurableObjectState {
     deleteAlarm(): Promise<void>
     getAlarm(): Promise<number | null>
     setAlarm(time: number): Promise<void>
+    deleteAll(): Promise<void>
   }
 }
 interface DurableObjectNamespace {
@@ -49,8 +51,18 @@ declare class WebSocketRequestResponsePair {
 interface ResponseInit {
   webSocket?: WebSocket
 }
+interface R2UploadedPart {
+  partNumber: number
+  etag: string
+}
 interface R2Bucket {
   put(key: string, value: Uint8Array): Promise<unknown>
-  get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>
+  get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number; arrayBuffer(): Promise<ArrayBuffer> } | null>
   delete(keys: string | string[]): Promise<void>
+  list(options: { prefix: string; cursor?: string; limit?: number }): Promise<{ objects: { key: string; uploaded: Date }[]; truncated: boolean; cursor?: string }>
+  createMultipartUpload(key: string, options?: { httpMetadata?: { contentType?: string } }): Promise<{
+    uploadPart(partNumber: number, value: Uint8Array): Promise<R2UploadedPart>
+    complete(parts: R2UploadedPart[]): Promise<unknown>
+    abort(): Promise<void>
+  }>
 }

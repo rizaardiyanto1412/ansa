@@ -32,6 +32,7 @@ import { Avatar, Kbd, MenuDivider, MenuItem, MenuLabel, Modal, Popover, StatusBa
 import { Logo } from './pages/Auth'
 import { brand, workspace } from './lib/workspace'
 import { NewConversation, type ComposePrefill } from './inbox/NewConversation'
+import { PlanBanner } from './settings/Billing'
 
 interface ShellActions {
   compose: (prefill?: ComposePrefill) => void
@@ -307,6 +308,7 @@ export function Shell() {
     <ShellContext.Provider value={actions}>
       <div className="flex h-full flex-col">
         <TopBar mailboxes={list} current={current} onMenu={current ? () => setDrawer(true) : undefined} />
+        <PlanBanner />
         <div className="flex min-h-0 flex-1">
           {current && (
             <aside className="hidden shrink-0 border-r border-line md:block">

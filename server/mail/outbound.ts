@@ -2,11 +2,12 @@ import nodemailer from 'nodemailer'
 import crypto from 'node:crypto'
 import tls from 'node:tls'
 import { blobs } from '../blobs.ts'
-import { all, get, run, parseJson } from '../db.ts'
+import { all, get, run, now, parseJson } from '../db.ts'
 import { config } from '../config.ts'
 import { decrypt } from '../crypto.ts'
 import { publish } from '../events.ts'
-import { bindTenant } from '../tenant.ts'
+import { controlPlane, planState, READ_ONLY_REASON, type SendingStatus } from '../hosted.ts'
+import { bindTenant, currentTenant } from '../tenant.ts'
 import { escapeHtml, htmlToText } from './html.ts'
 
 export interface SmtpSettings {
@@ -46,7 +47,19 @@ export interface MailboxRow {
   auto_reply_subject: string
   auto_reply_body: string
   created_at: number
+  kind: 'imap' | 'managed'
+  inbound_address: string
+  sending_domain: string
+  sending_status: SendingStatus
+  sending_records: string
+  sending_checked_at: number | null
+  forwarding_confirmation: string | null
+  first_inbound_at: number | null
 }
+
+export const domainOf = (email: string) => email.split('@')[1]?.toLowerCase() ?? ''
+
+export const sendsAsOwnDomain = (mailbox: MailboxRow) => mailbox.kind === 'managed' && mailbox.sending_status === 'verified' && mailbox.sending_domain === domainOf(mailbox.email)
 
 export function smtpOf(mailbox: MailboxRow): SmtpSettings {
   return {
@@ -56,6 +69,11 @@ export function smtpOf(mailbox: MailboxRow): SmtpSettings {
     user: mailbox.smtp_user,
     pass: decrypt(mailbox.smtp_pass_enc),
   }
+}
+
+function tenantSmtp(): SmtpSettings {
+  const { passEnc, ...smtp } = controlPlane().state.smtp
+  return { ...smtp, pass: decrypt(passEnc) }
 }
 
 function transportFor(smtp: SmtpSettings) {
@@ -153,43 +171,102 @@ export interface OutgoingMail {
   fromName?: string
 }
 
-export async function sendMail(mailbox: MailboxRow, mail: OutgoingMail): Promise<void> {
-  if (config.mailDisabled) return
-  if (!mailbox.smtp_host) throw new Error('This mailbox has no SMTP server. Add one in Settings → Mailboxes.')
-  const transport = transportFor(smtpOf(mailbox))
-  try {
-    await transport.sendMail({
-      from: { name: mail.fromName || mailbox.from_name || mailbox.name, address: mailbox.email },
-      to: mail.to,
-      cc: mail.cc?.length ? mail.cc : undefined,
-      bcc: mail.bcc?.length ? mail.bcc : undefined,
-      subject: mail.subject,
-      html: mail.html,
-      text: mail.text ?? htmlToText(mail.html),
-      messageId: mail.messageId,
-      inReplyTo: mail.inReplyTo || undefined,
-      references: mail.references?.length ? mail.references : undefined,
-      attachments: mail.attachments,
-      headers: mail.headers,
+export async function sendMail(mailbox: MailboxRow, mail: OutgoingMail): Promise<{ providerId: string | null }> {
+  if (config.mailDisabled) return { providerId: null }
+  const message = {
+    from: { name: mail.fromName || mailbox.from_name || mailbox.name, address: mailbox.email },
+    to: mail.to,
+    cc: mail.cc?.length ? mail.cc : undefined,
+    subject: mail.subject,
+    html: mail.html,
+    text: mail.text ?? htmlToText(mail.html),
+    messageId: mail.messageId,
+    inReplyTo: mail.inReplyTo || undefined,
+    references: mail.references?.length ? mail.references : undefined,
+    attachments: mail.attachments,
+    headers: mail.headers,
+  }
+  const bcc = mail.bcc ?? []
+  if (mailbox.kind === 'managed' && !sendsAsOwnDomain(mailbox)) {
+    const { control, workspaceId } = controlPlane()
+    // Bcc stays out of the message itself: the stream transport would print it as a header.
+    const built = await nodemailer.createTransport({ streamTransport: true, buffer: true }).sendMail(message)
+    const raw = built.message as Buffer
+    const sent = await control.sendFallback(workspaceId, {
+      mailboxId: mailbox.id,
+      raw: raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer,
+      from: `"${message.from.name.replace(/["\\\r\n]/g, '')}" <${mailbox.email}>`,
+      to: [...new Set([...mail.to, ...(mail.cc ?? []), ...bcc])],
     })
+    return { providerId: sent.messageId }
+  }
+  const smtp = mailbox.kind === 'managed' ? tenantSmtp() : smtpOf(mailbox)
+  if (!smtp.host) throw new Error('This mailbox has no SMTP server. Add one in Settings → Mailboxes.')
+  const transport = transportFor(smtp)
+  try {
+    await transport.sendMail({ ...message, bcc: bcc.length ? bcc : undefined })
   } finally {
     transport.close()
   }
+  return { providerId: null }
 }
 
 const reSubject = (subject: string) => (/^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`)
 
-/** Deliver an agent reply. Marks the thread sent or failed and tells open browsers. */
+const HOUR = 3_600_000
+const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, HOUR, 3 * HOUR]
+
+type SendSlot = { slot: number | null } | { retryAt: number }
+
+function reserveSend(): SendSlot {
+  const limit = planState()?.hourlySendLimit
+  if (limit === undefined) return { slot: null }
+  run('DELETE FROM outbound_log WHERE sent_at <= ?', now() - HOUR)
+  const used = get<{ n: number; oldest: number | null }>('SELECT COUNT(*) AS n, MIN(sent_at) AS oldest FROM outbound_log')!
+  if (used.n >= limit) return { retryAt: (used.oldest ?? now()) + HOUR }
+  return { slot: run('INSERT INTO outbound_log (sent_at) VALUES (?)', now()).id }
+}
+
+function retryHint(err: unknown, mailbox: MailboxRow): { retryAt: number | null; reason: string } | null {
+  const e = (err ?? {}) as { name?: string; status?: number; responseCode?: number; retryAt?: unknown; response?: unknown }
+  if (e.name === 'RateLimited' || e.status === 429) {
+    const retryAt = Number(e.retryAt)
+    const reason =
+      mailbox.kind === 'managed' && !sendsAsOwnDomain(mailbox)
+        ? 'Replies sent before your domain is verified are limited each hour. Verify the sending domain in Settings → Mailboxes to lift the limit.'
+        : 'The mail service asked to slow down.'
+    return { retryAt: Number.isFinite(retryAt) && retryAt > 0 ? retryAt : null, reason }
+  }
+  if (typeof e.responseCode === 'number' && e.responseCode >= 400 && e.responseCode < 500) {
+    return { retryAt: null, reason: `The mail server asked to try again later.${serverSaid(typeof e.response === 'string' ? e.response : '')}` }
+  }
+  return null
+}
+
+export const UNCERTAIN_REASON = 'This reply may have been delivered. Ansa restarted while sending it and could not confirm delivery.'
+
 export async function deliverThread(threadId: number): Promise<void> {
   const thread = get<any>('SELECT * FROM threads WHERE id = ?', threadId)
-  if (!thread || thread.type !== 'reply') return
+  if (!thread || thread.type !== 'reply' || thread.state !== 'sending') return
   const conversation = get<any>('SELECT * FROM conversations WHERE id = ?', thread.conversation_id)
   const mailbox = conversation && get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', conversation.mailbox_id)
   if (!conversation || !mailbox) return
-  const finish = (state: 'sent' | 'failed', error: string | null) => {
-    run('UPDATE threads SET state = ?, error = ? WHERE id = ?', state, error, threadId)
-    publish({ type: 'conversation', id: conversation.id, mailboxId: mailbox.id, reason: state === 'sent' ? 'sent' : 'send_failed' })
+  const settle = (state: 'sent' | 'failed' | 'queued', change: { error?: string; retryAt?: number; attempts?: number; providerId?: string | null } = {}) => {
+    run(
+      'UPDATE threads SET state = ?, error = ?, retry_at = ?, attempts = ?, attempt_id = NULL, provider_id = COALESCE(?, provider_id) WHERE id = ?',
+      state,
+      change.error ?? null,
+      change.retryAt ?? null,
+      change.attempts ?? thread.attempts,
+      change.providerId ?? null,
+      threadId,
+    )
+    publish({ type: 'conversation', id: conversation.id, mailboxId: mailbox.id, reason: state === 'sent' ? 'sent' : state === 'queued' ? 'send_queued' : 'send_failed' })
+    if (state === 'queued') currentTenant().deadlineChanged()
   }
+  if (planState()?.readOnly) return settle('failed', { error: READ_ONLY_REASON })
+  const reserved = reserveSend()
+  if ('retryAt' in reserved) return settle('queued', { retryAt: reserved.retryAt, error: 'This workspace reached its hourly sending limit.' })
   try {
     const author = thread.user_id ? get<{ name: string; signature: string }>('SELECT name, signature FROM users WHERE id = ?', thread.user_id) : undefined
     const signature = thread.via === 'auto' ? '' : author?.signature?.trim() || mailbox.signature?.trim() || ''
@@ -217,25 +294,49 @@ export async function deliverThread(threadId: number): Promise<void> {
       if (content) attachments.push({ filename: a.filename, content: Buffer.from(await new Response(content.body).arrayBuffer()), contentType: a.mime })
     }
 
-    await sendMail(mailbox, {
+    const attemptId: string = thread.message_id ?? newMessageId(mailbox.email)
+    run('UPDATE threads SET attempt_id = ?, message_id = ? WHERE id = ?', attemptId, attemptId, threadId)
+    const { providerId } = await sendMail(mailbox, {
       to: parseJson<string[]>(thread.to_addrs, []),
       cc: parseJson<string[]>(thread.cc, []),
       bcc: parseJson<string[]>(thread.bcc, []),
       subject: isFirst ? conversation.subject || '(no subject)' : reSubject(conversation.subject || '(no subject)'),
       html: wrapEmailHtml(html),
-      messageId: thread.message_id,
+      messageId: attemptId,
       inReplyTo: thread.in_reply_to,
       references: thread.refs ? String(thread.refs).split(/\s+/).filter(Boolean) : [],
       attachments,
       headers: { 'X-Ansa-Conversation': String(conversation.id) },
     })
-    finish('sent', null)
+    settle('sent', { providerId })
   } catch (err) {
+    if (reserved.slot !== null) run('DELETE FROM outbound_log WHERE id = ?', reserved.slot)
+    const hint = retryHint(err, mailbox)
+    // A named time is the other side's own schedule, so waiting for it does not use up a try.
+    const attempts = thread.attempts + (hint?.retryAt ? 0 : 1)
+    if (hint && attempts <= BACKOFF_MS.length) {
+      console.log(`[mail] thread ${threadId} will be sent again later:`, (err as Error).message)
+      return settle('queued', { retryAt: Math.max(hint.retryAt ?? 0, now() + BACKOFF_MS[Math.max(0, attempts - 1)]), attempts, error: hint.reason })
+    }
     console.error(`[mail] sending thread ${threadId} failed:`, (err as Error).message)
-    finish('failed', explainMailError(err))
+    settle('failed', { attempts, error: hint ? `${hint.reason} Ansa tried ${attempts} times and stopped.` : explainMailError(err) })
   }
 }
 
 export function queueDelivery(threadId: number) {
   setImmediate(() => void deliverThread(threadId))
+}
+
+export const nextRetryAt = () => get<{ at: number | null }>(`SELECT MIN(retry_at) AS at FROM threads WHERE state = 'queued' AND retry_at IS NOT NULL`)?.at ?? null
+
+export async function dispatchQueued() {
+  const due = all<{ id: number }>(`SELECT id FROM threads WHERE state = 'queued' AND retry_at IS NOT NULL AND retry_at <= ? ORDER BY retry_at, id LIMIT 20`, now())
+  for (const { id } of due) {
+    if (run(`UPDATE threads SET state = 'sending', retry_at = NULL WHERE id = ? AND state = 'queued'`, id).changes !== 1) continue
+    await deliverThread(id)
+  }
+}
+
+export function releaseThrottled() {
+  run(`UPDATE threads SET retry_at = ? WHERE state = 'queued' AND attempts = 0 AND retry_at > ?`, now(), now())
 }

@@ -8,6 +8,7 @@ import { migrate, run } from './db.ts'
 import { loadHostedUrl } from './hosted.ts'
 import { deliverResetOutbox } from './services/accounts.ts'
 import { dispatchScheduled, wakeSnoozed } from './services/conversations.ts'
+import { dispatchQueued, UNCERTAIN_REASON } from './mail/outbound.ts'
 
 export const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
@@ -51,9 +52,8 @@ export function createApp() {
 export function prepareData() {
   migrate()
   loadHostedUrl()
-  // Replies that were mid-send when the process stopped were never delivered. Flag them so an agent can re-send.
-  const interrupted = run(`UPDATE threads SET state = 'failed', error = 'Ansa restarted before this reply was sent. Send it again.' WHERE state = 'sending'`).changes
-  if (interrupted) console.log(`[mail] ${interrupted} unsent repl${interrupted === 1 ? 'y was' : 'ies were'} flagged for re-sending`)
+  const uncertain = run(`UPDATE threads SET state = 'uncertain', error = ?, retry_at = NULL WHERE state = 'sending'`, UNCERTAIN_REASON).changes
+  if (uncertain) console.log(`[mail] ${uncertain} repl${uncertain === 1 ? 'y was' : 'ies were'} interrupted while sending and may have been delivered`)
 }
 
 /** Periodic jobs that only matter while the process is awake. */
@@ -71,6 +71,7 @@ export function startTimers() {
   every(15_000, prunePresence)
   every(30_000, wakeSnoozed)
   every(10_000, () => void dispatchScheduled().catch((err) => console.error('[send later]', err)))
+  every(10_000, () => void dispatchQueued().catch((err) => console.error('[send again]', err)))
   every(10_000, () => void deliverResetOutbox().catch((err) => console.error('[reset outbox]', err)))
   every(3_600_000, pruneSessions)
 }

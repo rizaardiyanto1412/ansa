@@ -33,7 +33,7 @@ import type { Attachment, Conversation, ConversationSummary, Status, Thread, Vie
 import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
 import { lineHtml } from './Editor'
-import { STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
+import { brand, STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
 import { LightboxProvider, isImageType, useLightbox, type LightboxImage } from './Lightbox'
 import { whenLabel } from './SendLater'
 import { CustomerPanel } from './CustomerPanel'
@@ -812,11 +812,11 @@ function DraftCard({ conversationId, draft, onEdit }: { conversationId: number; 
 
 function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean; onToggle: () => void }) {
   const client = useQueryClient()
-  const { toast } = useFeedback()
+  const { toast, confirm } = useFeedback()
   const [showQuoted, setShowQuoted] = useState(false)
   const quoted = useQuery({ queryKey: ['thread-full', thread.id], queryFn: () => api.get<{ html: string }>(`/threads/${thread.id}/full`).then((r) => r.html), enabled: showQuoted, staleTime: Infinity })
   const retry = useMutation({
-    mutationFn: () => api.post(`/threads/${thread.id}/retry`),
+    mutationFn: (confirmed: boolean) => api.post(`/threads/${thread.id}/retry`, { confirm: confirmed }),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['conversation'] }),
     onError: (err: Error) => toast(err.message, { kind: 'error' }),
   })
@@ -866,7 +866,7 @@ function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean
           folded ? 'py-4' : 'pt-5 pb-6',
           isNote ? 'border-note-line bg-note' : 'border-line bg-surface',
           scheduled && 'border-dashed border-line-strong',
-          thread.state === 'failed' && 'ring-1 ring-danger/50',
+          (thread.state === 'failed' || thread.state === 'uncertain') && 'ring-1 ring-danger/50',
         )}
       >
         {/* A bar down the left edge marks what the team wrote. */}
@@ -878,6 +878,7 @@ function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean
               <span className="truncate text-sm font-semibold">{name}</span>
             </button>
             {thread.state === 'sending' && <span className="shrink-0 text-xs text-fg-3">Sending…</span>}
+            {thread.state === 'queued' && <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-0.5 text-xs font-medium text-warn">Waiting to send</span>}
             {scheduled && <span className="shrink-0 rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent-fg">{thread.sendAt ? 'Scheduled' : 'On hold'}</span>}
             <time className={cx('shrink-0 text-xs tabular-nums', isNote ? 'text-note-fg' : 'text-fg-3')} title={fullTime(thread.createdAt)}>
               {timeOnly.format(thread.createdAt)}
@@ -932,14 +933,31 @@ function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean
                 </Button>
               </div>
             )}
-            {thread.state === 'failed' && (
+            {thread.state === 'queued' && (
+              <div role="status" className="mb-4 flex items-start gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[13px] text-warn">
+                <Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Not sent yet. {brand()} sends it automatically{thread.retryAt ? ` ${thread.retryAt <= Date.now() ? 'in a moment' : whenLabel(thread.retryAt)}` : ''}.</p>
+                  <p>{thread.error}</p>
+                </div>
+              </div>
+            )}
+            {(thread.state === 'failed' || thread.state === 'uncertain') && (
               <div role="alert" className="mb-4 flex items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-[13px] text-danger">
                 <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium">This reply was not sent.</p>
+                  <p className="font-medium">{thread.state === 'uncertain' ? 'This reply may have been delivered.' : 'This reply was not sent.'}</p>
                   <p>{thread.error}</p>
                 </div>
-                <Button size="sm" loading={retry.isPending} onClick={() => retry.mutate()} icon={<RefreshCw className="size-3.5" aria-hidden />}>
+                <Button
+                  size="sm"
+                  loading={retry.isPending}
+                  onClick={async () => {
+                    const confirmed = thread.state === 'uncertain' && await confirm({ title: 'Send this reply again?', body: 'The customer may already have received this reply. Sending it again could deliver a second copy.', confirmLabel: 'Send again' })
+                    if (thread.state !== 'uncertain' || confirmed) retry.mutate(confirmed)
+                  }}
+                  icon={<RefreshCw className="size-3.5" aria-hidden />}
+                >
                   Send again
                 </Button>
               </div>

@@ -12,14 +12,21 @@ export interface StoredAttachment {
 
 const safeName = (name: string) => (name || 'attachment').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 200) || 'attachment'
 
-export async function storeAttachment(
-  data: Uint8Array,
-  meta: { filename: string; mime?: string; threadId?: number | null; contentId?: string | null; inline?: boolean; uploadedBy?: number | null },
-): Promise<StoredAttachment> {
-  const date = new Date()
-  const dir = `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, '0')}`
-  const key = `${dir}/${crypto.randomBytes(16).toString('hex')}`
-  await blobs.put(key, data)
+export interface AttachmentMeta {
+  filename: string
+  mime?: string
+  threadId?: number | null
+  contentId?: string | null
+  inline?: boolean
+  uploadedBy?: number | null
+}
+
+export function attachmentKey(name = crypto.randomBytes(16).toString('hex'), at = now()): string {
+  const date = new Date(at)
+  return `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${name}`
+}
+
+export function recordAttachment(key: string, size: number, meta: AttachmentMeta): StoredAttachment {
   const filename = safeName(meta.filename)
   const mime = meta.mime || 'application/octet-stream'
   const { id } = run(
@@ -27,14 +34,20 @@ export async function storeAttachment(
     meta.threadId ?? null,
     filename,
     mime,
-    data.byteLength,
+    size,
     key,
     meta.contentId ?? null,
     !!meta.inline,
     meta.uploadedBy ?? null,
     now(),
   )
-  return { id, filename, mime, size: data.byteLength, url: `/api/attachments/${id}/${encodeURIComponent(filename)}` }
+  return { id, filename, mime, size, url: `/api/attachments/${id}/${encodeURIComponent(filename)}` }
+}
+
+export async function storeAttachment(data: Uint8Array, meta: AttachmentMeta): Promise<StoredAttachment> {
+  const key = attachmentKey()
+  await blobs.put(key, data)
+  return recordAttachment(key, data.byteLength, meta)
 }
 
 export async function attachmentFile(id: number): Promise<(StoredBlob & { filename: string; mime: string }) | null> {

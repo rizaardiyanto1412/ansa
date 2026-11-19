@@ -54,6 +54,8 @@ docker run --rm -v ansa_ansa-data:/data -v "$PWD":/backup alpine \
 
 Keep `secret.key` with the database. It encrypts the saved mail passwords, and they cannot be read without it.
 
+An admin can also download the data from **Settings → Workspace → Export workspace**: a zip file with one SQL file per table and every attachment. It leaves out passwords, sessions, API tokens and saved mail passwords, so it is a copy of your data, not a backup you can restore from.
+
 ## Deploy to Cloudflare
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/rizaardiyanto1412/ansa)
@@ -75,7 +77,7 @@ How it runs on Cloudflare:
 - **Use port 587 or 465 for SMTP.** Cloudflare blocks port 25.
 - **Your domain.** Add a custom domain to the Worker in the Cloudflare dashboard. Links in notification emails use the address you sign in on. To pin it, set `APP_URL` under `vars` in `wrangler.jsonc`.
 - **Plan.** The free plan is enough to try Ansa. For a team that keeps it open all day, use Workers Paid: an open browser tab keeps the Durable Object awake, and the free plan's daily allowance covers about one tab.
-- **Backups.** Cloudflare keeps 30 days of point-in-time recovery for the Durable Object. There is no file to download.
+- **Backups.** Cloudflare keeps 30 days of point-in-time recovery for the Durable Object. For a file you can keep, use **Settings → Workspace → Export workspace**.
 - **Updates.** Push to the repository that the button created. Cloudflare rebuilds and deploys it.
 
 Try it locally with `npm run dev:cf` (http://localhost:8787).

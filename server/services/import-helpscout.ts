@@ -11,10 +11,12 @@ import { all, get, run, tx, now, getSetting, setSetting } from '../db.ts'
 import { decrypt, encrypt, hashPassword, randomToken } from '../crypto.ts'
 import { config } from '../config.ts'
 import { publish } from '../events.ts'
+import { assertMailboxAllowed } from '../hosted.ts'
 import { currentTenant } from '../tenant.ts'
 import { cleanHtml, htmlToText, previewOf } from '../mail/html.ts'
 import { USER_COLORS } from '../auth.ts'
 import { storeAttachment } from './attachments.ts'
+import { assignInboundAddress } from './managed.ts'
 import { ensureTag, reindex } from './conversations.ts'
 import { AppError, findOrCreateCustomer, isEmail, normEmail } from './customers.ts'
 
@@ -209,16 +211,26 @@ export async function startImport(input: StartInput) {
   if (load().status === 'running') throw new AppError('An import is already running.', 409)
   if (input.inboxes.length === 0) throw new AppError('Choose at least one inbox to import.')
   const token = await fetchToken(input.appId, input.appSecret)
-  const inboxes: ImportInbox[] = input.inboxes.map((box) => {
+  const inboxes: ImportInbox[] = []
+  for (const box of input.inboxes) {
     let mailboxId = box.mailboxId
     if (mailboxId) {
       if (!get('SELECT 1 FROM mailboxes WHERE id = ?', mailboxId)) throw new AppError('Mailbox not found.', 404)
     } else {
       const email = isEmail(box.email) ? normEmail(box.email) : `inbox-${box.hsId}@imported.invalid`
-      mailboxId = run('INSERT INTO mailboxes (name, email, created_at) VALUES (?, ?, ?)', (box.name || 'Imported').slice(0, 100), email, now()).id
+      assertMailboxAllowed(get<{ n: number }>('SELECT COUNT(*) AS n FROM mailboxes')!.n)
+      mailboxId = run('INSERT INTO mailboxes (name, email, kind, created_at) VALUES (?, ?, ?, ?)', (box.name || 'Imported').slice(0, 100), email, config.hosted ? 'managed' : 'imap', now()).id
+      if (config.hosted) {
+        try {
+          await assignInboundAddress(mailboxId)
+        } catch (err) {
+          run('DELETE FROM mailboxes WHERE id = ?', mailboxId)
+          throw err
+        }
+      }
     }
-    return { hsId: box.hsId, name: box.name, email: box.email, mailboxId, page: 1, totalPages: 0, total: 0, done: false }
-  })
+    inboxes.push({ hsId: box.hsId, name: box.name, email: box.email, mailboxId, page: 1, totalPages: 0, total: 0, done: false })
+  }
   save({ ...EMPTY, status: 'running', startedAt: now(), attachments: input.attachments, inboxes, appId: input.appId, secretEnc: encrypt(input.appSecret), token })
   publish({ type: 'refresh', scope: 'import' })
   kick()

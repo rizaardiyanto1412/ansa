@@ -9,7 +9,7 @@ import { createApp, prepareData } from '../app.ts'
 import { readConfig } from '../config.ts'
 import { decrypt, encrypt, sha256 } from '../crypto.ts'
 import { all, get, getSetting, run } from '../db.ts'
-import type { HostedState, SystemEmail } from '../hosted.ts'
+import type { ControlPlane, HostedState, SystemEmail } from '../hosted.ts'
 import { deliverResetOutbox } from '../services/accounts.ts'
 import { testApp } from '../services/apps.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../services/provision.ts'
@@ -32,7 +32,7 @@ interface CallOptions {
 function install(env: Record<string, string>, origin: string, dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ansa-accounts-'))) {
   const sent: (SystemEmail & { workspaceId: string })[] = []
   const tenant = openNodeTenant(readConfig((key) => ({ DATA_DIR: dataDir, ...env })[key]))
-  if (env.ANSA_HOSTED === '1') tenant.control = { sendSystemEmail: async (workspaceId, mail) => void sent.push({ workspaceId, ...mail }) }
+  if (env.ANSA_HOSTED === '1') tenant.control = { sendSystemEmail: async (workspaceId: string, mail: SystemEmail) => void sent.push({ workspaceId, ...mail }) } as ControlPlane
   const inside = <T>(fn: () => T): T => runInTenant(tenant, fn)
   const app = inside(() => {
     prepareData()
@@ -387,6 +387,7 @@ test('reset delivery retries with backoff and sends each request once', async ()
   let failures = 1
   let calls = 0
   ws.tenant.control = {
+    ...control,
     sendSystemEmail: async (workspaceId, mail) => {
       calls++
       if (failures-- > 0) throw new Error('control plane is down')

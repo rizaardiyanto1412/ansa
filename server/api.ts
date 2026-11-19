@@ -56,7 +56,10 @@ import { brandName, getWorkspace, publicWorkspace, saveWorkspace } from './servi
 import { blobs } from './blobs.ts'
 import { cancelImport, connectHelpScout, importStatus, resumeImport, startImport } from './services/import-helpscout.ts'
 import { publish } from './events.ts'
-import { hostedState } from './hosted.ts'
+import { assertMailboxAllowed, hostedState, RPC_ERROR_STATUS, type RpcErrorName } from './hosted.ts'
+import { addSendingDomain, assignInboundAddress, billing, checkSendingDomain, forgetSendingDomainIfMoved, managedView, releaseInboundAddress } from './services/managed.ts'
+import { exportArchive, exportFileName } from './services/export.ts'
+import { bindTenant } from './tenant.ts'
 import { cancelInvite, checkPassword, consumeLink, inspectLink, inviteTeammate, minPasswordLength, requestPasswordReset, voidLinks } from './services/accounts.ts'
 import { CORE_VERSION } from './services/provision.ts'
 
@@ -92,6 +95,7 @@ api.use('*', async (c, next) => (c.req.path.endsWith('/attachments') ? next() : 
 
 api.onError((err, c) => {
   if (err instanceof AppError) return c.json({ error: err.message }, err.status as 400)
+  if (err instanceof Error && err.name in RPC_ERROR_STATUS) return c.json({ error: err.message, code: err.name }, RPC_ERROR_STATUS[err.name as RpcErrorName] as 400)
   console.error('[api]', err)
   return c.json({ error: 'Something went wrong on the server.' }, 500)
 })
@@ -334,10 +338,12 @@ api.patch('/users/:id', requireAdmin, async (c) => {
 function serializeMailbox(m: MailboxRow, admin: boolean) {
   const base = {
     id: m.id,
+    kind: m.kind,
     name: m.name,
     email: m.email,
     fromName: m.from_name,
     color: m.color,
+    receiving: !!m.first_inbound_at,
     imapEnabled: !!m.imap_enabled,
     smtpConfigured: !!m.smtp_host,
     syncStatus: m.sync_status,
@@ -362,12 +368,14 @@ function serializeMailbox(m: MailboxRow, admin: boolean) {
     importExisting: !!m.import_existing,
     autoReplyEnabled: !!m.auto_reply_enabled,
     autoReplyBody: m.auto_reply_body,
+    managed: m.kind === 'managed' ? managedView(m) : null,
   }
 }
 
 const SECURITY = ['ssl', 'starttls', 'none']
 
-function applyMailboxFields(id: number, data: Record<string, any>) {
+function applyMailboxFields(id: number, input: Record<string, any>, kind: MailboxRow['kind']) {
+  const data = kind === 'managed' ? Object.fromEntries(Object.entries(input).filter(([field]) => !/^(smtp|imap|copySmtp|importExisting)/.test(field))) : input
   const set = (column: string, value: string | number | boolean) => run(`UPDATE mailboxes SET ${column} = ? WHERE id = ?`, value, id)
   if (data.name !== undefined) {
     if (!str(data.name, 100)) throw new AppError('Give the mailbox a name.')
@@ -415,12 +423,23 @@ api.post('/mailboxes', requireAdmin, async (c) => {
   const data = await body(c)
   if (!str(data.name, 100)) throw new AppError('Give the mailbox a name.')
   if (!isEmail(data.email)) throw new AppError('Enter the mailbox email address.')
+  const kind: MailboxRow['kind'] = data.kind === 'imap' || data.kind === 'managed' ? data.kind : config.hosted ? 'managed' : 'imap'
+  if (kind === 'managed' && !config.hosted) throw new AppError('This install connects mailboxes with IMAP and SMTP.')
+  assertMailboxAllowed(get<{ n: number }>('SELECT COUNT(*) AS n FROM mailboxes')!.n)
   const id = tx(() => {
-    const created = run('INSERT INTO mailboxes (name, email, created_at) VALUES (?, ?, ?)', str(data.name, 100), normEmail(data.email), now()).id
-    applyMailboxFields(created, data)
+    const created = run('INSERT INTO mailboxes (name, email, kind, created_at) VALUES (?, ?, ?, ?)', str(data.name, 100), normEmail(data.email), kind, now()).id
+    applyMailboxFields(created, data, kind)
     return created
   })
-  void restartMailbox(id)
+  if (kind === 'managed') {
+    try {
+      await assignInboundAddress(id)
+    } catch (err) {
+      run('DELETE FROM mailboxes WHERE id = ?', id)
+      throw err
+    }
+    publish({ type: 'mailbox', id })
+  } else void restartMailbox(id)
   return c.json({ mailbox: serializeMailbox(get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)!, true) }, 201)
 })
 
@@ -429,7 +448,10 @@ api.patch('/mailboxes/:id', requireAdmin, async (c) => {
   const before = get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)
   if (!before) throw new AppError('Mailbox not found.', 404)
   const data = await body(c)
-  tx(() => applyMailboxFields(id, data))
+  tx(() => {
+    applyMailboxFields(id, data, before.kind)
+    forgetSendingDomainIfMoved(id)
+  })
   const after = get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)!
   const imapChanged = (['imap_enabled', 'imap_host', 'imap_port', 'imap_security', 'imap_user', 'imap_pass_enc', 'imap_folder'] as const).some((k) => before[k] !== after[k])
   if (imapChanged) {
@@ -444,6 +466,7 @@ api.patch('/mailboxes/:id', requireAdmin, async (c) => {
 
 api.delete('/mailboxes/:id', requireAdmin, async (c) => {
   const id = idParam(c.req.param('id'))
+  if (get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)?.kind === 'managed') await releaseInboundAddress(id)
   const files = all<{ storage_key: string }>(
     'SELECT a.storage_key FROM attachments a JOIN threads t ON t.id = a.thread_id JOIN conversations c ON c.id = t.conversation_id WHERE c.mailbox_id = ?',
     id,
@@ -495,6 +518,22 @@ api.post('/mailboxes/test', requireAdmin, async (c) => {
     return c.json({ ok: false, message: explainMailError(err) })
   }
 })
+
+const managedMailboxResponse = (id: number) => ({ mailbox: serializeMailbox(get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)!, true) })
+
+api.post('/mailboxes/:id/sending-domain', requireAdmin, async (c) => {
+  const id = idParam(c.req.param('id'))
+  await addSendingDomain(id)
+  return c.json(managedMailboxResponse(id))
+})
+
+api.post('/mailboxes/:id/sending-domain/check', requireAdmin, async (c) => {
+  const id = idParam(c.req.param('id'))
+  await checkSendingDomain(id)
+  return c.json(managedMailboxResponse(id))
+})
+
+api.get('/billing', requireAdmin, async (c) => c.json(await billing()))
 
 api.post('/mailboxes/:id/sync', async (c) => {
   // Fetching mail can send a mailbox's auto reply, and an internal token must not decide which one goes out.
@@ -670,8 +709,8 @@ api.delete('/conversations/:id/presence', (c) => {
 
 api.get('/threads/:id/full', (c) => c.json({ html: getQuotedHtml(idParam(c.req.param('id'))) }))
 
-api.post('/threads/:id/retry', (c) => {
-  retryDelivery(idParam(c.req.param('id')), actorOf(c))
+api.post('/threads/:id/retry', async (c) => {
+  retryDelivery(idParam(c.req.param('id')), actorOf(c), (await body(c)).confirm === true)
   return c.json({ ok: true })
 })
 
@@ -885,6 +924,18 @@ api.patch('/workspace', requireAdmin, async (c) => {
   saveWorkspace(patch)
   publish({ type: 'refresh', scope: 'workspace' })
   return c.json({ workspace: publicWorkspace() })
+})
+
+api.get('/workspace/export', requireAdmin, (c) => {
+  const archive = exportArchive()
+  // The body is read after this handler returns, outside the workspace it belongs to.
+  const pull = bindTenant(async (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const { done, value } = await archive.next()
+    if (done) controller.close()
+    else controller.enqueue(value)
+  })
+  const stream = new ReadableStream<Uint8Array>({ pull, cancel: bindTenant(() => void archive.return(undefined)) })
+  return new Response(stream, { headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${exportFileName()}"`, 'Cache-Control': 'no-store' } })
 })
 
 api.post('/workspace/logo', requireAdmin, bodyLimit({ maxSize: LOGO_MAX_BYTES + 64 * 1024, onError: (c) => c.json({ error: 'The logo can be up to 512 KB.' }, 413) }), async (c) => {

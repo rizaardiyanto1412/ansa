@@ -22,6 +22,9 @@ export interface Tenant {
   presence: Map<number, Map<number, PresenceEntry>>
   autoReplyLog: Map<string, number>
   control: ControlPlane | null
+  workspaceId: string | null
+  /** A deadline moved outside a request: a platform that sleeps between events sets its next wake-up here. */
+  deadlineChanged: () => void
   importing: { stepping: boolean; looping: boolean }
   imapWorkers: Map<number, MailboxWorker>
 }
@@ -36,6 +39,8 @@ export function createTenant(init: Pick<Tenant, 'config' | 'db' | 'blobs'>): Ten
     presence: new Map(),
     autoReplyLog: new Map(),
     control: null,
+    workspaceId: null,
+    deadlineChanged: () => {},
     importing: { stepping: false, looping: false },
     imapWorkers: new Map(),
   }
@@ -53,6 +58,8 @@ export function currentTenant(): Tenant {
   if (!tenant) throw new Error('No workspace is active here. Every entry point must run inside runInTenant().')
   return tenant
 }
+
+export const activeTenant = (): Tenant | null => active.getStore() ?? fallback
 
 /** For a callback that a library or timer may call outside the async context it was created in. */
 export function bindTenant<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
