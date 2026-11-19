@@ -115,6 +115,7 @@ async function hs<T>(session: Session, path: string): Promise<T> {
       continue
     }
     if (res.status === 429) throw new SlowDown(Math.min(120, Number(res.headers.get('x-ratelimit-retry-after')) || 15))
+    if (res.status >= 500 && config.imapPollOnly) throw new SlowDown(2)
     if (res.status >= 500 && attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 1500))
       continue

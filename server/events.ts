@@ -38,6 +38,8 @@ export interface PresenceEntry extends Viewer {
 const PRESENCE_TTL = 45_000
 
 export function viewersOf(conversationId: number): Viewer[] {
+  const { liveEvents } = currentTenant()
+  if (liveEvents.kind === 'websocket') return liveEvents.viewers()[conversationId] ?? []
   const entries = currentTenant().presence.get(conversationId)
   if (!entries) return []
   return [...entries.values()].map(({ seenAt: _seenAt, ...viewer }) => viewer)
@@ -45,6 +47,8 @@ export function viewersOf(conversationId: number): Viewer[] {
 
 /** Everyone who has a conversation open, by conversation. The conversation list shows them on its rows. */
 export function allViewers(): Record<number, Viewer[]> {
+  const { liveEvents } = currentTenant()
+  if (liveEvents.kind === 'websocket') return liveEvents.viewers()
   prunePresence()
   const all: Record<number, Viewer[]> = {}
   for (const conversationId of currentTenant().presence.keys()) all[conversationId] = viewersOf(conversationId)
@@ -57,7 +61,6 @@ export function touchPresence(conversationId: number, viewer: Viewer) {
   if (!entries) presence.set(conversationId, (entries = new Map()))
   const before = entries.get(viewer.userId)
   entries.set(viewer.userId, { ...viewer, seenAt: Date.now() })
-  // On Cloudflare no timer runs between requests, so each heartbeat also clears out people who left.
   prunePresence()
   if (!before || before.state !== viewer.state) publish({ type: 'presence', conversationId, viewers: viewersOf(conversationId) })
 }

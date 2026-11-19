@@ -20,8 +20,7 @@ export default {
     }
     const isCurrent = (response: Response | null) => !mine || Number(response?.headers.get(CODE_HEADER) || 0) >= mine
 
-    // Do not open a long-lived stream to an object that still runs old code: the stream is what keeps it old.
-    // The browser retries the stream every few seconds, and by then the object has restarted.
+    // Probe before upgrading: a WebSocket handshake cannot be retried after it succeeds.
     if (!objectIsCurrent && mine && new URL(request.url).pathname === '/api/events') {
       const probe = await object()
         .fetch(new Request(new URL('/healthz', request.url), { headers: { [CODE_HEADER]: String(mine) } }))
