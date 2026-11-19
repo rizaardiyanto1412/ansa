@@ -79,11 +79,11 @@ test('alarms use the earliest actual deadline, survive reconstruction, and disap
   const start = Date.now()
   const step = (await schedule()).alarm!
   assert.ok(step >= start + 1000 && step < start + 2000, 'an active import gets a short next step')
-  assert.equal((await schedule()).alarm, step, 'unrelated requests do not postpone import work')
+  assert.ok((await schedule()).alarm! < start + 2000, 'requests keep import work within the one-second scheduling floor')
   await sql.exec("UPDATE settings SET value = ? WHERE key = 'import_helpscout'", JSON.stringify({ status: 'cancelled' }))
   await sql.exec('UPDATE conversations SET snoozed_until = ?', Date.now() + 100)
   await schedule()
-  await wait(300)
+  await wait(1200)
   assert.equal((await schedule()).alarm, null, 'the real alarm woke the conversation and returned to idle')
 })
 
@@ -170,10 +170,58 @@ test('API tokens connect, revoked credentials stop receiving events, and malform
     assert.deepEqual((await viewers(workspace, cookie)).viewers, {}, 'revoked sockets no longer appear as viewers')
     const malformed = new Promise<number>((resolve) => browser.socket.addEventListener('close', (event) => resolve(event.code), { once: true }))
     browser.socket.send(JSON.stringify({ type: 'presence', presence: { conversationId: -1, state: 'replying' } }))
-    assert.equal(await malformed, 1008, 'invalid socket input is rejected at the boundary')
+    assert.equal(await malformed, 1007, 'invalid socket input does not sign out the client')
   } finally {
     for (const connection of [app, browser]) {
       if (connection.socket.readyState < 2) connection.socket.close(1000)
     }
+  }
+})
+
+
+test('expired presence closes sockets with and without an automatic heartbeat after hibernation', async () => {
+  for (const ping of [false, true]) {
+    const workspace = ping ? 'stale-ping' : 'stale-connect'
+    const { cookie } = await fixture(workspace)
+    const connection = await connect(workspace, { Cookie: cookie })
+    presence(connection.socket, 'viewing')
+    await until(() => connection.received.some((raw) => raw.includes('viewing')))
+    await worker.evictDurableObject('ANSA', { name: workspace, webSockets: 'hibernate' })
+    if (ping) {
+      connection.socket.send('ping')
+      await until(() => connection.received.includes('pong'))
+    }
+    const now = Date.now()
+    const readAt = (at: number) => call<Record<number, unknown[]>>(workspace, `/__presence-at?at=${at}`)
+    assert.equal((await readAt(now + 74_000))[1].length, 1, 'a recent socket remains visible')
+    const closed = new Promise<number>((resolve) => connection.socket.addEventListener('close', (event) => resolve(event.code), { once: true }))
+    assert.deepEqual(await readAt(now + 76_000), {}, 'a silent socket no longer appears as a viewer')
+    assert.equal(await closed, 1000, 'expiry closes the socket without an authentication failure')
+  }
+})
+
+test('one failed alarm job does not skip later jobs or spin on its overdue deadline', async () => {
+  const workspace = 'alarm-failure'
+  const { sql } = await fixture(workspace)
+  await sql.exec("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES ('expired', 1, 1, 1)")
+  await sql.exec('UPDATE conversations SET snoozed_until = 1')
+  await sql.exec("CREATE TRIGGER fail_wake BEFORE UPDATE OF snoozed_until ON conversations BEGIN SELECT RAISE(ABORT, 'wake failure'); END")
+  const start = Date.now()
+  const result = await call<{ alarm: number }>(workspace, '/__run-alarm')
+  assert.ok(result.alarm >= start + 1000, 'an overdue failed job waits at least one second')
+  assert.equal((await sql.exec("SELECT id FROM sessions WHERE id = 'expired'")).length, 0, 'session pruning runs after waking snoozes fails')
+  await sql.exec('DROP TRIGGER fail_wake')
+  await sql.exec('UPDATE conversations SET snoozed_until = NULL')
+  await call(workspace, '/__schedule')
+})
+
+test('malformed JSON and unsupported frames close without an authentication failure', async () => {
+  const workspace = 'invalid-frames'
+  const { cookie } = await fixture(workspace)
+  for (const [input, code] of [['{', 1007], ['x'.repeat(1025), 1003], [new Uint8Array([1]), 1003]] as const) {
+    const connection = await connect(workspace, { Cookie: cookie })
+    const closed = new Promise<number>((resolve) => connection.socket.addEventListener('close', (event) => resolve(event.code), { once: true }))
+    connection.socket.send(input)
+    assert.equal(await closed, code)
   }
 })

@@ -9,6 +9,7 @@ const attachmentSchema = z.object({
   user: z.object({ userId: z.number().int().positive(), name: z.string(), color: z.string() }),
   credential: z.object({ kind: z.enum(['session', 'token']), hash: z.string() }),
   presence: presence.nullable(),
+  connectedAt: z.number(),
 })
 type Attachment = z.infer<typeof attachmentSchema>
 
@@ -32,7 +33,7 @@ export class HibernatingEvents {
   connect(user: User, credential: Attachment['credential']): Response {
     const pair = new WebSocketPair()
     const socket = pair[1]
-    socket.serializeAttachment({ user: { userId: user.id, name: user.name, color: user.color }, credential, presence: null } satisfies Attachment)
+    socket.serializeAttachment({ user: { userId: user.id, name: user.name, color: user.color }, credential, presence: null, connectedAt: Date.now() } satisfies Attachment)
     this.ctx.acceptWebSocket(socket)
     socket.send(JSON.stringify({ type: 'hello' }))
     return new Response(null, { status: 101, webSocket: pair[0] })
@@ -42,7 +43,14 @@ export class HibernatingEvents {
     const all: Record<number, Viewer[]> = {}
     for (const socket of this.ctx.getWebSockets()) {
       const data = this.attachment(socket)
-      if (!data?.presence || socket.readyState !== 1 || !this.authorized(data)) continue
+      if (!data || socket.readyState !== 1) continue
+      const lastSeen = this.ctx.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? data.connectedAt
+      if (Date.now() - lastSeen > 75_000) {
+        socket.serializeAttachment({ ...data, presence: null } satisfies Attachment)
+        socket.close(1000, 'Heartbeat expired.')
+        continue
+      }
+      if (!data.presence || !this.authorized(data)) continue
       const { conversationId, state } = data.presence
       const viewers = all[conversationId] ??= []
       const existing = viewers.find((viewer) => viewer.userId === data.user.userId)
@@ -73,15 +81,15 @@ export class HibernatingEvents {
   message(socket: WebSocket, raw: string | ArrayBuffer) {
     const data = this.attachment(socket)
     if (!data || !this.authorized(data)) return this.close(socket, 1008)
-    if (typeof raw !== 'string' || raw.length > 1024) return this.close(socket, 1008)
+    if (typeof raw !== 'string' || raw.length > 1024) return this.close(socket, 1003)
     let input: unknown
     try {
       input = JSON.parse(raw)
     } catch {
-      return this.close(socket, 1008)
+      return this.close(socket, 1007)
     }
     const parsed = messageSchema.safeParse(input)
-    if (!parsed.success) return this.close(socket, 1008)
+    if (!parsed.success) return this.close(socket, 1007)
     const next = parsed.data.presence
     if (next && !get('SELECT 1 FROM conversations WHERE id = ?', next.conversationId)) return
     socket.serializeAttachment({ ...data, presence: next } satisfies Attachment)
@@ -93,7 +101,7 @@ export class HibernatingEvents {
   close(socket: WebSocket, code = 1000) {
     const data = this.attachment(socket)
     if (data) socket.serializeAttachment({ ...data, presence: null } satisfies Attachment)
-    if (socket.readyState !== 3) socket.close(code, code === 1008 ? 'Sign in again or check the message.' : 'Connection closed.')
+    if (socket.readyState !== 3) socket.close(code, code === 1008 ? 'Sign in again.' : 'Connection closed.')
     if (data?.presence) publish({ type: 'presence', conversationId: data.presence.conversationId, viewers: this.viewers()[data.presence.conversationId] ?? [] })
   }
 }

@@ -71,6 +71,7 @@ export function useLiveEvents() {
     let ping: ReturnType<typeof setInterval> | undefined
     let closed = false
     let delay = 1000
+    let connected = false
     let awaitingPong = false
     let pending: ReturnType<typeof setTimeout> | undefined
     const refreshLists = () => {
@@ -105,7 +106,8 @@ export function useLiveEvents() {
       } else if (event.type === 'hello') {
         delay = 1000
         setPresence(presence.current)
-        void client.invalidateQueries()
+        if (connected) void client.invalidateQueries()
+        connected = true
       }
     }
     const disconnect = () => {
@@ -154,6 +156,7 @@ export function useLiveEvents() {
       source.onmessage = onMessage
       source.onerror = reconnect
     }
+    // A hidden SSE tab gives its connection back: browsers allow only six connections per site over plain HTTP.
     const onVisibility = () => {
       if (liveTransport === 'websocket') return
       if (document.visibilityState === 'hidden') disconnect()

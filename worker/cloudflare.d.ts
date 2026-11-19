@@ -16,6 +16,7 @@ interface DurableObjectState {
   abort(reason?: string): never
   acceptWebSocket(socket: WebSocket): void
   getWebSockets(): WebSocket[]
+  getWebSocketAutoResponseTimestamp(socket: WebSocket): Date | null
   setWebSocketAutoResponse(pair: WebSocketRequestResponsePair): void
   storage: {
     sql: { exec(query: string, ...bindings: unknown[]): SqlCursor }
@@ -44,4 +45,9 @@ declare class WebSocketRequestResponsePair {
 }
 interface ResponseInit {
   webSocket?: WebSocket
+}
+interface R2Bucket {
+  put(key: string, value: Uint8Array): Promise<unknown>
+  get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>
+  delete(keys: string | string[]): Promise<void>
 }

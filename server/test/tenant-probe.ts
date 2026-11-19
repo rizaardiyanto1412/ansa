@@ -44,24 +44,19 @@ async function until(what: string, done: () => boolean) {
   }
 }
 
-type Hop = (work: () => void) => Promise<void>
+type Hop = (work: () => Promise<void>) => Promise<void>
 
 const settled = (defer: (callback: () => void) => void): Hop => (work) =>
   new Promise<void>((resolve, reject) =>
     defer(() => {
-      try {
-        work()
-        resolve()
-      } catch (err) {
-        reject(err)
-      }
+      void work().then(resolve, reject)
     }),
   )
 
 const hopsFor = (bus: EventEmitter): Record<string, Hop> => ({
   await: async (work) => {
     await null
-    work()
+    await work()
   },
   'promise chain': (work) =>
     Promise.resolve()
@@ -87,19 +82,19 @@ export async function probe({ name, appUrl, bus, rounds }: ProbeInput): Promise<
   let published = 0
 
   setSetting('probe', name)
-  blobs.put(BLOB_KEY, new TextEncoder().encode(name))
+  await blobs.put(BLOB_KEY, new TextEncoder().encode(name))
   const mailboxId = run(`INSERT INTO mailboxes (name, email, created_at) VALUES (?, 'support@shared.test', 1)`, name).id
   const agentId = run(`INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, 'agent@shared.test', 'x', 'admin', 1)`, name).id
   const conversation = createConversation({ mailboxId, customerEmail: 'customer@shared.test', subject: name, bodyHtml: `<p>${name}</p>`, kind: 'customer' }, { userId: null, via: 'email' })
 
-  const mine = (where: string) => {
+  const mine = async (where: string) => {
     assert.equal(config.appUrl, appUrl, `${name}: its own public URL after ${where}`)
     assert.equal(config.secret, secret, `${name}: its own secret after ${where}`)
     assert.equal(decrypt(sealed), name, `${name}: opens what it sealed after ${where}`)
     assert.equal(getSetting('probe', ''), name, `${name}: its own setting after ${where}`)
     assert.deepEqual(all<{ subject: string }>('SELECT subject FROM conversations').map((row) => row.subject), [name], `${name}: only its own conversations after ${where}`)
     assert.deepEqual(all<{ name: string }>('SELECT name FROM mailboxes').map((row) => row.name), [name], `${name}: only its own mailboxes after ${where}`)
-    assert.equal(new TextDecoder().decode(blobs.get(BLOB_KEY) ?? new Uint8Array()), name, `${name}: its own file after ${where}`)
+    assert.equal(await new Response((await blobs.get(BLOB_KEY))?.body).text(), name, `${name}: its own file after ${where}`)
     const refreshes = seen.flatMap((event) => (event.type === 'refresh' ? [event.scope] : []))
     assert.deepEqual(refreshes, Array(published).fill(name), `${name}: only its own live events after ${where}`)
   }
@@ -110,10 +105,10 @@ export async function probe({ name, appUrl, bus, rounds }: ProbeInput): Promise<
     let steps = 0
     for (let round = 0; round < rounds; round++) {
       for (const [where, hop] of Object.entries(hopsFor(bus))) {
-        await hop(() => {
-          mine(where)
+        await hop(async () => {
+          await mine(where)
           setSetting('probe', name)
-          blobs.put(BLOB_KEY, new TextEncoder().encode(name))
+          await blobs.put(BLOB_KEY, new TextEncoder().encode(name))
           publish({ type: 'refresh', scope: name })
           published++
           journal.push(name)
@@ -132,7 +127,7 @@ export async function probe({ name, appUrl, bus, rounds }: ProbeInput): Promise<
       seen.some((event) => event.type === 'conversation' && event.reason === 'send_failed'),
       `${name}: the delivery result reached its own live stream`,
     )
-    mine('the queued delivery')
+    await mine('the queued delivery')
     return { name, secretPrint: sha256(secret), sealed, steps }
   } finally {
     running.delete(name)
