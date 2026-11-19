@@ -8,6 +8,7 @@ import { storeAttachment } from '../services/attachments.ts'
 import { runWorkflows } from '../services/workflows.ts'
 import { notifyReplyRejected, parseNotificationRef } from '../services/notify.ts'
 import { brandName } from '../services/workspace.ts'
+import { currentTenant } from '../tenant.ts'
 
 export interface IngestResult {
   conversationId: number
@@ -30,8 +31,6 @@ function isAutomated(mail: ParsedMail): boolean {
   const from = mail.from?.value[0]?.address?.toLowerCase() || ''
   return /^(mailer-daemon|postmaster|no-?reply|do-?not-?reply|bounces?)@/.test(from)
 }
-
-const autoReplyLog = new Map<string, number>()
 
 const SEEN_KEY = 'notification_replies_seen'
 
@@ -185,6 +184,7 @@ export async function ingestRaw(mailboxId: number, source: Buffer | string, opts
 
   const automated = isAutomated(mail)
   if (created && !automated && !historical && !opts.historical && !spam && mailbox.auto_reply_enabled && mailbox.auto_reply_body.trim()) {
+    const { autoReplyLog } = currentTenant()
     for (const [address, at] of autoReplyLog) if (Date.now() - at > 10 * 60_000) autoReplyLog.delete(address)
     const last = autoReplyLog.get(from) ?? 0
     if (Date.now() - last > 10 * 60_000) {

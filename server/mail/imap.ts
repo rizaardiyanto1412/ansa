@@ -3,6 +3,7 @@ import { all, get, run, now, getSetting, setSetting } from '../db.ts'
 import { config } from '../config.ts'
 import { decrypt } from '../crypto.ts'
 import { publish } from '../events.ts'
+import { bindTenant, currentTenant } from '../tenant.ts'
 import { explainMailError, type MailboxRow } from './outbound.ts'
 import { ingestRaw } from './ingest.ts'
 
@@ -54,7 +55,7 @@ export async function testImap(s: ImapSettings): Promise<{ messages: number }> {
 
 const IMPORT_DAYS = 30
 
-class MailboxWorker {
+export class MailboxWorker {
   private client: ImapFlow | null = null
   private stopped = false
   private syncing = false
@@ -89,10 +90,12 @@ class MailboxWorker {
     })
     this.client = client
     client.on('error', (err) => console.error(`[imap ${mailbox.email}]`, err.message))
-    client.on('close', () => {
+    const onClose = bindTenant(() => {
       if (this.client === client) this.reconnect('Connection closed')
     })
-    client.on('exists', () => void this.sync())
+    const onExists = bindTenant(() => void this.sync())
+    client.on('close', onClose)
+    client.on('exists', onExists)
     try {
       await client.connect()
       await client.mailboxOpen(mailbox.imap_folder || 'INBOX')
@@ -104,7 +107,7 @@ class MailboxWorker {
         await client.logout().catch(() => client.close())
         return
       }
-      this.timer = setInterval(() => void this.sync(), config.imapPollSeconds * 1000)
+      this.timer = setInterval(onExists, config.imapPollSeconds * 1000)
     } catch (err) {
       this.reconnect(explainMailError(err))
     }
@@ -117,7 +120,8 @@ class MailboxWorker {
     const delay = Math.min(5 * 60_000, 5000 * 2 ** Math.min(this.failures - 1, 6))
     this.setStatus('error', reason)
     if (config.imapPollOnly) return // the next scheduled check tries again
-    this.retry = setTimeout(() => void this.start(), delay)
+    const retry = bindTenant(() => void this.start())
+    this.retry = setTimeout(retry, delay)
   }
 
   private teardown() {
@@ -218,10 +222,9 @@ class MailboxWorker {
   }
 }
 
-const workers = new Map<number, MailboxWorker>()
-
 /** (Re)start the IMAP worker for one mailbox after its settings change. */
 export async function restartMailbox(mailboxId: number) {
+  const workers = currentTenant().imapWorkers
   await workers.get(mailboxId)?.stop()
   workers.delete(mailboxId)
   if (config.mailDisabled) return
@@ -249,12 +252,13 @@ export function startAllMailboxes() {
 }
 
 export async function syncMailboxNow(mailboxId: number) {
-  const worker = workers.get(mailboxId)
+  const worker = currentTenant().imapWorkers.get(mailboxId)
   if (!worker || config.imapPollOnly) return restartMailbox(mailboxId)
   await worker.sync()
 }
 
 export async function stopAllMailboxes() {
+  const workers = currentTenant().imapWorkers
   await Promise.all([...workers.values()].map((w) => w.stop()))
   workers.clear()
 }

@@ -3,6 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { get, run, now } from './db.ts'
 import { config } from './config.ts'
 import { randomToken, sha256 } from './crypto.ts'
+import { currentTenant } from './tenant.ts'
 
 export interface User {
   id: number
@@ -109,9 +110,9 @@ export const requireAdmin: MiddlewareHandler<Env> = async (c, next) => {
   return next()
 }
 
-const attempts = new Map<string, { count: number; resetAt: number }>()
 /** Returns false when this key has failed too often in the last 15 minutes. */
 export function allowAttempt(key: string, max = 10): boolean {
+  const attempts = currentTenant().signInAttempts
   const entry = attempts.get(key)
   if (!entry || entry.resetAt < Date.now()) {
     attempts.set(key, { count: 1, resetAt: Date.now() + 15 * 60_000 })
@@ -120,11 +121,12 @@ export function allowAttempt(key: string, max = 10): boolean {
   entry.count++
   return entry.count <= max
 }
-export const clearAttempts = (key: string) => attempts.delete(key)
+export const clearAttempts = (key: string) => currentTenant().signInAttempts.delete(key)
 
 /** Drop expired sessions and stale login counters. The platform calls this about once an hour. */
 export function pruneSessions() {
   run('DELETE FROM sessions WHERE expires_at < ?', now())
+  const attempts = currentTenant().signInAttempts
   for (const [key, entry] of attempts) if (entry.resetAt < Date.now()) attempts.delete(key)
 }
 
