@@ -8,9 +8,13 @@ The control plane stores queued raw mail at `inbound/<workspaceId>/<uuid>`. `ing
 
 An ingest is keyed by Message-ID, or by SHA-256 of the raw bytes when Message-ID is absent. Its durable state is `started` or `complete`. Attachments are written before message rows. The message, attachment rows, and completion state commit in one transaction. Retrying a started ingest repeats the blob writes at the same keys and files one message. Only completed ingestion returns `duplicate`.
 
+Started ingests older than two days are removed with their unused hash-keyed attachment blobs by the Node timer or Worker alarm. A later retry starts clean. Skipped messages also discard unused delivery blobs. Filed attachments are retained.
+
+Completed ingest rows are retained for 180 days. A Message-ID-less duplicate older than that can file again. Messages with a Message-ID still deduplicate against filed threads.
+
 ## Outbound delivery
 
-A reply is stored as `sending` with an attempt ID before the provider receives it. The attempt ID is its Message-ID. After restart, replies left in `sending` become `uncertain`, because the provider may have accepted them. Automatic retries skip uncertain replies. **Send again** requires confirmation and preserves the Message-ID so another delivery is recognisable.
+A reply is stored as `sending` with an attempt ID before the provider receives it. The attempt ID is its Message-ID. After restart, replies left in `sending` with an attempt ID become `uncertain`, because the provider may have accepted them. Replies without an attempt ID return to `queued` for automatic delivery. Automatic retries skip uncertain replies. **Send again** requires confirmation and preserves the Message-ID so another delivery is recognisable.
 
 A hard bounce fails a reply only when the recipient matches its To, Cc, or Bcc recipients. A complaint leaves delivery state unchanged.
 

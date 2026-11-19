@@ -17,7 +17,7 @@ import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
 import { rpcError, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
-import { ingestInbound, noteBounce, setSendingDomain } from '../server/services/managed.ts'
+import { ingestInbound, nextIngestCleanupAt, pruneInboundIngests, noteBounce, setSendingDomain } from '../server/services/managed.ts'
 import { exportArchive } from '../server/services/export.ts'
 import { pollAllMailboxes, stopAllMailboxes } from '../server/mail/imap.ts'
 import { dispatchQueued, nextRetryAt } from '../server/mail/outbound.ts'
@@ -246,9 +246,11 @@ export class AnsaStore extends DurableObject<StoreEnv> {
   async ingestInbound(input: { mailboxId: number; raw?: ArrayBuffer; r2Key?: string }): Promise<'accepted' | 'duplicate'> {
     return this.inTenant(async () => {
       this.hostedWorkspaceId()
-      const result = await ingestInbound(input.mailboxId, await this.inboundBytes(input))
-      await this.scheduleAlarm()
-      return result
+      try {
+        return await ingestInbound(input.mailboxId, await this.inboundBytes(input))
+      } finally {
+        await this.scheduleAlarm()
+      }
     })
   }
 
@@ -376,7 +378,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   protected async scheduleAlarm() {
     const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
-    const deadlines = [nextScheduledAt(), nextRetryAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const deadlines = [nextScheduledAt(), nextRetryAt(), nextResetAt(), nextIngestCleanupAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
     const current = await this.ctx.storage.getAlarm()
     if (deadlines.length === 0) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -394,6 +396,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
         ['wakeSnoozed', () => wakeSnoozed()],
         ['deliverResetOutbox', () => deliverResetOutbox()],
         ['pruneSessions', () => pruneSessions()],
+        ['pruneInboundIngests', () => pruneInboundIngests()],
         ['importStep', async () => {
           try {
             await importStep()

@@ -19,6 +19,10 @@
   <a href="docs/self-hosting.md">Self-hosting guide</a>
 </p>
 
+## Hosted Ansa
+
+Don't want to run it yourself? Ansa is also available hosted at https://helpansa.com, from $10 a month for the whole team.
+
 ## Why Ansa
 
 **Pay for the help desk, not for every person in it.** Ansa is free and open source. You pay only for

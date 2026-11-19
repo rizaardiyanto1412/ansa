@@ -9,6 +9,7 @@ import { loadHostedUrl } from './hosted.ts'
 import { deliverResetOutbox } from './services/accounts.ts'
 import { dispatchScheduled, wakeSnoozed } from './services/conversations.ts'
 import { dispatchQueued, UNCERTAIN_REASON } from './mail/outbound.ts'
+import { pruneInboundIngests } from './services/managed.ts'
 
 export const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
@@ -52,7 +53,8 @@ export function createApp() {
 export function prepareData() {
   migrate()
   loadHostedUrl()
-  const uncertain = run(`UPDATE threads SET state = 'uncertain', error = ?, retry_at = NULL WHERE state = 'sending'`, UNCERTAIN_REASON).changes
+  run(`UPDATE threads SET state = 'queued', error = NULL, retry_at = ? WHERE state = 'sending' AND attempt_id IS NULL`, Date.now())
+  const uncertain = run(`UPDATE threads SET state = 'uncertain', error = ?, retry_at = NULL WHERE state = 'sending' AND attempt_id IS NOT NULL`, UNCERTAIN_REASON).changes
   if (uncertain) console.log(`[mail] ${uncertain} repl${uncertain === 1 ? 'y was' : 'ies were'} interrupted while sending and may have been delivered`)
 }
 
@@ -74,4 +76,5 @@ export function startTimers() {
   every(10_000, () => void dispatchQueued().catch((err) => console.error('[send again]', err)))
   every(10_000, () => void deliverResetOutbox().catch((err) => console.error('[reset outbox]', err)))
   every(3_600_000, pruneSessions)
+  every(3_600_000, () => void pruneInboundIngests().catch((err) => console.error('[ingest cleanup]', err)))
 }

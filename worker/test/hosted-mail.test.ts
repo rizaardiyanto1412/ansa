@@ -188,7 +188,8 @@ test('replies go through the fallback until the domain verifies, then through th
   assert.deepEqual([added.data.mailbox.managed.sendingDomain, added.data.mailbox.managed.sendingStatus, added.data.mailbox.managed.sendingRecords.length], ['acme.test', 'pending', 2])
   assert.deepEqual(await controlCalls('addSendingDomain'), [[supportId, 'acme.test']], "the domain is the one in the mailbox's address")
   const recheck = await nextAlarm()
-  assert.equal(recheck, null, 'pending sending domains never schedule an object alarm')
+  const [retention] = await sql<{ at: number }>(`SELECT MIN(created_at + 180 * 86400000) AS at FROM inbound_ingests`)
+  assert.equal(recheck, retention.at, 'only ingest retention schedules an alarm while sending domains are pending')
 
   const pending = await reply(conversationId, 'Sent while DNS is pending')
   assert.equal(pending.state, 'sent')
@@ -283,6 +284,27 @@ test('a failed inbound transaction stays resumable in workerd', async () => {
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw })).result, 'accepted')
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw })).result, 'duplicate')
   assert.deepEqual(await sql(`SELECT COUNT(*) AS n FROM conversations WHERE subject = 'Atomic inbound'`), [{ n: 1 }], 'the retry creates exactly one conversation')
+})
+
+test('the alarm removes abandoned inbound blobs and a later delivery starts clean', async () => {
+  const raw = ['From: Cara <cara@customer.test>', 'To: support@acme.test', 'Subject: Abandoned inbound', 'Message-ID: <abandoned@customer.test>', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary=b', '', '--b', 'Content-Type: text/plain', '', 'See attached', '--b', 'Content-Type: text/plain; name=abandoned.txt', 'Content-Disposition: attachment; filename=abandoned.txt', '', 'abandoned file', '--b--', ''].join('\r\n')
+  await sql(`CREATE TRIGGER reject_abandoned BEFORE INSERT ON attachments WHEN NEW.filename = 'abandoned.txt' BEGIN SELECT RAISE(ABORT, 'attachment unavailable'); END`)
+  const failed = await rpc('ingestInbound', { mailboxId: supportId, raw })
+  assert.match(failed.error?.message ?? '', /attachment unavailable/)
+  const [started] = await sql<{ created_at: number }>(`SELECT created_at FROM inbound_ingests WHERE key = 'id:<abandoned@customer.test>'`)
+  const wake = await nextAlarm()
+  assert.ok(wake !== null && wake <= started.created_at + 2 * 86_400_000, 'even a failed ingestion has an alarm no later than its cleanup deadline')
+  const [file] = await sql<{ storage_key: string }>(`SELECT storage_key FROM inbound_ingest_files WHERE ingest_key = 'id:<abandoned@customer.test>'`)
+  const store = await bucket()
+  assert.ok(await store.get(`ws/mail/${file.storage_key}`), 'the failed transaction leaves its blob tracked in R2')
+  await sql(`UPDATE inbound_ingests SET created_at = ? WHERE key = 'id:<abandoned@customer.test>'`, Date.now() - 3 * 86_400_000)
+  await tick()
+  assert.equal(await store.get(`ws/mail/${file.storage_key}`), null, 'the alarm removes the abandoned R2 object')
+  assert.deepEqual(await sql(`SELECT * FROM inbound_ingests WHERE key = 'id:<abandoned@customer.test>'`), [])
+  await sql('DROP TRIGGER reject_abandoned')
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw })).result, 'accepted', 'the next delivery files cleanly')
+  const [attachment] = await sql<{ storage_key: string }>(`SELECT storage_key FROM attachments WHERE filename = 'abandoned.txt'`)
+  assert.ok(await store.get(`ws/mail/${attachment.storage_key}`), 'the retried attachment is readable')
 })
 
 test('the retry API requires explicit confirmation for an uncertain reply', async () => {

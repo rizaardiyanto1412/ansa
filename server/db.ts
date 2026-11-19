@@ -370,6 +370,13 @@ const migrations: string[] = [
   CREATE INDEX inbound_ingests_created ON inbound_ingests(created_at);
   ALTER TABLE threads ADD COLUMN attempt_id TEXT;
   `,
+  `
+  CREATE TABLE inbound_ingest_files (
+    ingest_key TEXT NOT NULL REFERENCES inbound_ingests(key) ON DELETE CASCADE,
+    storage_key TEXT NOT NULL,
+    PRIMARY KEY (ingest_key, storage_key)
+  ) WITHOUT ROWID;
+  `,
 ]
 
 export const schemaVersion = () => get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0

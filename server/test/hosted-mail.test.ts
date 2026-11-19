@@ -11,7 +11,7 @@ import type { ControlPlane, SystemEmail } from '../hosted.ts'
 import { dispatchQueued, nextRetryAt } from '../mail/outbound.ts'
 import { addReply, createConversation, getConversation, retryDelivery, updateConversation } from '../services/conversations.ts'
 import { EXPORT_BLANKED_COLUMNS, EXPORT_OMITTED_TABLES, exportArchive } from '../services/export.ts'
-import { gmailForwardingConfirmation, ingestInbound, noteBounce } from '../services/managed.ts'
+import { gmailForwardingConfirmation, ingestInbound, nextIngestCleanupAt, pruneInboundIngests, noteBounce } from '../services/managed.ts'
 import { provision } from '../services/provision.ts'
 import { runInTenant } from '../tenant.ts'
 import { openNodeTenant } from '../tenant-node.ts'
@@ -302,7 +302,8 @@ for (const messageId of ['<resume@customer.test>', undefined]) {
       assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM conversations')!.n, 0, 'a failed blob write creates no conversation')
       assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM threads')!.n, 0, 'a failed blob write creates no thread')
       assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM attachments')!.n, 0, 'a failed blob write creates no attachment row')
-      assert.equal(get<{ state: string }>('SELECT state FROM inbound_ingests')!.state, 'started', 'the delivery stays resumable')
+      await pruneInboundIngests()
+      assert.equal(get<{ state: string }>('SELECT state FROM inbound_ingests')!.state, 'started', 'a recent delivery stays resumable after a sweep')
       assert.equal(get<{ first_inbound_at: number | null }>('SELECT first_inbound_at FROM mailboxes')!.first_inbound_at, null, 'an interrupted delivery does not mark forwarding as working')
     })
     const restarted = openNodeTenant(readConfig((key) => ({ DATA_DIR: ws.dataDir, ANSA_HOSTED: '1' })[key]))
@@ -337,6 +338,100 @@ test('inbound row failures roll back the entire message and concurrent retries f
     const results = await Promise.all([ingestInbound(ws.mailboxId, raw), ingestInbound(ws.mailboxId, raw)])
     assert.deepEqual(results.sort(), ['accepted', 'duplicate'])
     assert.deepEqual({ ...get<Record<string, number>>('SELECT (SELECT COUNT(*) FROM conversations) AS conversations, (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM attachments) AS attachments') }, { conversations: 1, threads: 1, attachments: 2 }, 'concurrent retries commit one message with both files')
+  })
+})
+
+test('restart requeues a reply interrupted before its provider attempt', async () => {
+  const ws = managedInstall()
+  await ws.inside(async () => {
+    const conversation = createConversation({ mailboxId: ws.mailboxId, customerEmail: 'cara@customer.test', subject: 'Help', bodyHtml: '<p>Help</p>', kind: 'customer' }, { userId: null, via: 'email' })
+    const id = addReply(conversation.id, { bodyHtml: '<p>Ready to send</p>', skipDelivery: true }, { userId: 1, via: 'web' })
+    run(`UPDATE threads SET state = 'sending', attempt_id = NULL, error = 'interrupted', retry_at = NULL WHERE id = ?`, id)
+    prepareData()
+    assert.equal(threadRow(id).state, 'queued')
+    assert.equal(threadRow(id).error, null)
+    assert.ok(threadRow(id).retry_at! <= Date.now(), 'the reply is due immediately')
+    await dispatchQueued()
+    assert.equal(threadRow(id).state, 'sent', 'automatic delivery sends a reply that never reached the provider')
+    assert.equal(ws.control.fallback.length, 1)
+  })
+})
+
+for (const messageId of ['<expired@customer.test>', undefined]) {
+  test(`abandoned inbound ${messageId ? 'with' : 'without'} Message-ID loses its blobs and retries cleanly`, async () => {
+    const ws = managedInstall()
+    await ws.inside(async () => {
+      const raw = inboundWithFiles(messageId)
+      const oldNow = Date.now
+      Date.now = () => oldNow() - 3 * 86_400_000
+      ws.tenant.db.exec(`CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment row unavailable'); END`)
+      try {
+        await assert.rejects(ingestInbound(ws.mailboxId, raw), /attachment row unavailable/)
+      } finally {
+        Date.now = oldNow
+        ws.tenant.db.exec('DROP TRIGGER reject_attachment')
+      }
+      const keys = all<{ storage_key: string }>('SELECT storage_key FROM inbound_ingest_files').map((file) => file.storage_key)
+      assert.equal(keys.length, 2)
+      for (const key of keys) assert.ok(await ws.tenant.blobs.get(key), 'failed filing leaves a tracked blob')
+      const store = ws.tenant.blobs
+      ws.tenant.blobs = { ...store, remove: async () => { throw new Error('delete unavailable') } }
+      await assert.rejects(pruneInboundIngests(), /delete unavailable/)
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM inbound_ingests')!.n, 1, 'failed blob removal retains the row for another sweep')
+      ws.tenant.blobs = store
+      await pruneInboundIngests()
+      for (const key of keys) assert.equal(await store.get(key), null, 'the abandoned blob is removed')
+      assert.equal(nextIngestCleanupAt(), null, 'the abandoned row and file tracking are removed')
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM inbound_ingest_files')!.n, 0)
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'accepted', 'the retry starts from a fresh ingest')
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM attachments')!.n, 2)
+      for (const file of all<{ storage_key: string }>('SELECT storage_key FROM attachments')) assert.ok(await store.get(file.storage_key))
+    })
+  })
+}
+
+test('an already-filed skip discards blobs from an earlier failed delivery', async () => {
+  const ws = managedInstall()
+  await ws.inside(async () => {
+    const raw = inboundWithFiles('<already-filed@customer.test>')
+    ws.tenant.db.exec(`CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment row unavailable'); END`)
+    await assert.rejects(ingestInbound(ws.mailboxId, raw), /attachment row unavailable/)
+    ws.tenant.db.exec('DROP TRIGGER reject_attachment')
+    const keys = all<{ storage_key: string }>('SELECT storage_key FROM inbound_ingest_files').map((file) => file.storage_key)
+    const { ingestRaw } = await import('../mail/ingest.ts')
+    await ingestRaw(ws.mailboxId, raw)
+    const store = ws.tenant.blobs
+    ws.tenant.blobs = { ...store, remove: async () => { throw new Error('delete unavailable') } }
+    await assert.rejects(ingestInbound(ws.mailboxId, raw), /delete unavailable/)
+    ws.tenant.blobs = store
+    assert.equal(await ingestInbound(ws.mailboxId, raw), 'duplicate', 'a completed skip retries failed blob cleanup')
+    for (const key of keys) assert.equal(await ws.tenant.blobs.get(key), null, 'skipped hash-keyed files are removed')
+    assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM threads')!.n, 1)
+    for (const file of all<{ storage_key: string }>('SELECT storage_key FROM attachments')) assert.ok(await ws.tenant.blobs.get(file.storage_key), 'the filed attachment survives')
+  })
+})
+
+test('completed inbound deduplication lasts 180 days and pruning preserves filed attachments', async () => {
+  const ws = managedInstall()
+  await ws.inside(async () => {
+    const raw = inboundWithFiles()
+    const started = Date.now()
+    assert.equal(await ingestInbound(ws.mailboxId, raw), 'accepted')
+    const oldNow = Date.now
+    try {
+      Date.now = () => started + 61 * 86_400_000
+      await pruneInboundIngests()
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'duplicate', 'deduplication survives beyond 60 days')
+      Date.now = () => started + 179 * 86_400_000
+      await pruneInboundIngests()
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'duplicate', 'deduplication survives until 180 days')
+      Date.now = () => started + 181 * 86_400_000
+      await pruneInboundIngests()
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'accepted', 'a Message-ID-less duplicate can file after retention expires')
+      for (const file of all<{ storage_key: string }>('SELECT storage_key FROM attachments')) assert.ok(await ws.tenant.blobs.get(file.storage_key), 'retention never deletes filed blobs')
+    } finally {
+      Date.now = oldNow
+    }
   })
 })
 
