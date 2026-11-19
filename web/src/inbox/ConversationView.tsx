@@ -28,7 +28,7 @@ import {
 } from 'lucide-react'
 import { api, qs } from '../lib/api'
 import { fileSize, fullTime, messageTime, STATUS_LABEL } from '../lib/format'
-import { useConversationPresence, useDebounced, useDocumentTitle, useHotkeys, useMailboxes, useSession, useTags, useUsers } from '../lib/hooks'
+import { useConversationPresence, useDebounced, useDocumentTitle, useHotkeys, useMailboxes, usePresence, useSession, useTags, useUsers } from '../lib/hooks'
 import type { Attachment, Conversation, ConversationSummary, Status, Thread, Viewer } from '../lib/types'
 import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
@@ -63,8 +63,8 @@ export function ConversationView({ id, onBack, onDone }: { id: number; onBack: (
     queryFn: () => api.get<{ conversation: Conversation; viewers: Viewer[] }>(`/conversations/${id}`),
   })
   const conversation = query.data?.conversation
-  const livePresence = useQuery<Viewer[]>({ queryKey: ['presence', id], queryFn: () => query.data?.viewers ?? [], enabled: false })
-  const viewers = (livePresence.data ?? query.data?.viewers ?? []).filter((v) => v.userId !== user.id)
+  const presence = usePresence()
+  const viewers = (presence[id] ?? []).filter((v) => v.userId !== user.id)
   useDocumentTitle(conversation?.subject ?? '')
 
   useConversationPresence(id, typing)

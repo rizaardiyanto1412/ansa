@@ -97,7 +97,6 @@ export function useLiveEvents() {
         void client.invalidateQueries({ queryKey: ['conversation', event.id] })
         if (event.reason === 'created' || event.reason === 'customer_reply') window.dispatchEvent(new CustomEvent('ansa:incoming', { detail: event }))
       } else if (event.type === 'presence') {
-        client.setQueryData(['presence', event.conversationId], event.viewers as Viewer[])
         client.setQueryData(['presence-all'], (old: Record<number, Viewer[]> | undefined) => ({ ...old, [event.conversationId]: event.viewers as Viewer[] }))
       } else if (event.type === 'mailbox') {
         void client.invalidateQueries({ queryKey: ['mailboxes'] })
