@@ -19,6 +19,7 @@
     "seed": "tsx server/seed.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
     "test": "tsx --test server/test/*.test.ts",
+    "test:workerd": "tsx --test worker/test/*.test.ts",
     "test:mail": "tsx server/test/e2e-mail.ts",
     "dev:cf": "npm run build:web && wrangler dev",
     "deploy": "npm run build:web && wrangler deploy"
