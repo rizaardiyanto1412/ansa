@@ -622,7 +622,8 @@ api.delete('/threads/:id/scheduled', (c) => {
 // Attachments
 // ---------------------------------------------------------------------------------------------
 
-api.post('/attachments', bodyLimit({ maxSize: config.maxAttachmentBytes + 1024 * 1024, onError: (c) => c.json({ error: 'That file is too large.' }, 413) }), async (c) => {
+const uploadLimit = () => bodyLimit({ maxSize: config.maxAttachmentBytes + 1024 * 1024, onError: (c) => c.json({ error: 'That file is too large.' }, 413) })
+api.post('/attachments', (c, next) => uploadLimit()(c, next), async (c) => {
   const form = await c.req.parseBody()
   const file = form.file
   if (!(file instanceof File)) throw new AppError('Choose a file to upload.')

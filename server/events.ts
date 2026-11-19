@@ -1,4 +1,5 @@
 /** In-process event bus that feeds the browser over Server-Sent Events, plus viewer presence. */
+import { currentTenant } from './tenant.ts'
 
 export type AppEvent =
   | { type: 'conversation'; id: number; mailboxId: number; reason: string; actorId?: number | null }
@@ -13,16 +14,16 @@ export interface Viewer {
   state: 'viewing' | 'replying'
 }
 
-type Listener = (event: AppEvent) => void
-const listeners = new Set<Listener>()
+export type Listener = (event: AppEvent) => void
 
 export function subscribe(listener: Listener) {
+  const { listeners } = currentTenant()
   listeners.add(listener)
   return () => listeners.delete(listener)
 }
 
 export function publish(event: AppEvent) {
-  for (const listener of listeners) {
+  for (const listener of currentTenant().listeners) {
     try {
       listener(event)
     } catch {
@@ -31,14 +32,13 @@ export function publish(event: AppEvent) {
   }
 }
 
-interface PresenceEntry extends Viewer {
+export interface PresenceEntry extends Viewer {
   seenAt: number
 }
-const presence = new Map<number, Map<number, PresenceEntry>>()
 const PRESENCE_TTL = 45_000
 
 export function viewersOf(conversationId: number): Viewer[] {
-  const entries = presence.get(conversationId)
+  const entries = currentTenant().presence.get(conversationId)
   if (!entries) return []
   return [...entries.values()].map(({ seenAt: _seenAt, ...viewer }) => viewer)
 }
@@ -47,11 +47,12 @@ export function viewersOf(conversationId: number): Viewer[] {
 export function allViewers(): Record<number, Viewer[]> {
   prunePresence()
   const all: Record<number, Viewer[]> = {}
-  for (const conversationId of presence.keys()) all[conversationId] = viewersOf(conversationId)
+  for (const conversationId of currentTenant().presence.keys()) all[conversationId] = viewersOf(conversationId)
   return all
 }
 
 export function touchPresence(conversationId: number, viewer: Viewer) {
+  const { presence } = currentTenant()
   let entries = presence.get(conversationId)
   if (!entries) presence.set(conversationId, (entries = new Map()))
   const before = entries.get(viewer.userId)
@@ -62,6 +63,7 @@ export function touchPresence(conversationId: number, viewer: Viewer) {
 }
 
 export function leavePresence(conversationId: number, userId: number) {
+  const { presence } = currentTenant()
   const entries = presence.get(conversationId)
   if (!entries?.delete(userId)) return
   if (entries.size === 0) presence.delete(conversationId)
@@ -70,6 +72,7 @@ export function leavePresence(conversationId: number, userId: number) {
 
 /** Forget viewers who stopped sending heartbeats. The platform calls this every few seconds. */
 export function prunePresence() {
+  const { presence } = currentTenant()
   const cutoff = Date.now() - PRESENCE_TTL
   for (const [conversationId, entries] of presence) {
     let changed = false

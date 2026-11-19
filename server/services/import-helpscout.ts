@@ -11,6 +11,7 @@ import { all, get, run, tx, now, getSetting, setSetting } from '../db.ts'
 import { decrypt, encrypt, hashPassword, randomToken } from '../crypto.ts'
 import { config } from '../config.ts'
 import { publish } from '../events.ts'
+import { currentTenant } from '../tenant.ts'
 import { cleanHtml, htmlToText, previewOf } from '../mail/html.ts'
 import { USER_COLORS } from '../auth.ts'
 import { storeAttachment } from './attachments.ts'
@@ -242,18 +243,17 @@ export function resumeImport() {
 // One step
 // ---------------------------------------------------------------------------------------------
 
-let stepping = false
-
 /**
  * Do a bounded amount of work. Returns true when another step should follow.
  * Safe to call at any time and from several places: only one step runs at once.
  */
 export async function importStep(): Promise<boolean> {
-  if (stepping) return true
+  const flags = currentTenant().importing
+  if (flags.stepping) return true
   let state = load()
   if (state.status !== 'running') return false
   if (state.waitUntil > Date.now()) return true
-  stepping = true
+  flags.stepping = true
   try {
     const appId = state.appId ?? ''
     const secret = decrypt(state.secretEnc)
@@ -325,20 +325,20 @@ export async function importStep(): Promise<boolean> {
     publish({ type: 'refresh', scope: 'import' })
     return false
   } finally {
-    stepping = false
+    flags.stepping = false
   }
 }
 
-let looping = false
 /** Keep stepping until there is nothing left. Used where the process stays alive (a server). On Cloudflare the alarm calls importStep instead. */
 export function kick() {
-  if (config.imapPollOnly || looping) return
-  looping = true
+  const flags = currentTenant().importing
+  if (config.imapPollOnly || flags.looping) return
+  flags.looping = true
   void (async () => {
     try {
       while (await importStep()) await new Promise((resolve) => setTimeout(resolve, load().waitUntil > Date.now() ? 2000 : 150))
     } finally {
-      looping = false
+      flags.looping = false
     }
   })()
 }

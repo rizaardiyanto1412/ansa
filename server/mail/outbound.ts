@@ -6,6 +6,7 @@ import { all, get, run, parseJson } from '../db.ts'
 import { config } from '../config.ts'
 import { decrypt } from '../crypto.ts'
 import { publish } from '../events.ts'
+import { bindTenant } from '../tenant.ts'
 import { escapeHtml, htmlToText } from './html.ts'
 
 export interface SmtpSettings {
@@ -68,7 +69,7 @@ function transportFor(smtp: SmtpSettings) {
     connectionTimeout: 20_000,
     greetingTimeout: 20_000,
     socketTimeout: 60_000,
-    ...(config.imapPollOnly && smtp.security === 'ssl' ? { getSocket: openTlsSocket(smtp) } : {}),
+    ...(config.imapPollOnly && smtp.security === 'ssl' ? { getSocket: bindTenant(openTlsSocket(smtp)) } : {}),
   } as Parameters<typeof nodemailer.createTransport>[0])
 }
 

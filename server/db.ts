@@ -2,6 +2,8 @@
  * Database access. The engine is SQLite everywhere; the driver differs per platform:
  * node:sqlite on a server (platform-node.ts), Durable Object storage on Cloudflare (worker/).
  */
+import { currentTenant } from './tenant.ts'
+
 export type SqlValue = string | number | bigint | null | Uint8Array
 export interface Driver {
   all(sql: string, params: SqlValue[]): any[]
@@ -11,14 +13,7 @@ export interface Driver {
   transaction<T>(fn: () => T): T
 }
 
-let driver: Driver | null = null
-export function initDb(next: Driver) {
-  driver = next
-}
-const use = (): Driver => {
-  if (!driver) throw new Error('The database is not ready. Load a platform module first.')
-  return driver
-}
+const use = (): Driver => currentTenant().db
 
 type Param = string | number | bigint | null | undefined | boolean | Uint8Array
 
@@ -45,14 +40,14 @@ export function allNamed<T = any>(sql: string, params: Record<string, Param>): T
   return all<T>(positional, ...values)
 }
 
-let depth = 0
 export function tx<T>(fn: () => T): T {
-  if (depth > 0) return fn()
-  depth++
+  const tenant = currentTenant()
+  if (tenant.txDepth > 0) return fn()
+  tenant.txDepth++
   try {
-    return use().transaction(fn)
+    return tenant.db.transaction(fn)
   } finally {
-    depth--
+    tenant.txDepth--
   }
 }
 

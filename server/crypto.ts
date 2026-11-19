@@ -1,12 +1,12 @@
 import crypto from 'node:crypto'
-import { config } from './config.ts'
+import { currentTenant } from './tenant.ts'
 
-let cached: { secret: string; key: Buffer } | null = null
-/** Derived on first use: the platform module sets config.secret after this file loads. */
 function key(): Buffer {
-  if (!config.secret) throw new Error('The encryption secret is not set.')
-  if (cached?.secret !== config.secret) cached = { secret: config.secret, key: crypto.createHash('sha256').update(`ansa:${config.secret}`).digest() }
-  return cached.key
+  const tenant = currentTenant()
+  const { secret } = tenant.config
+  if (!secret) throw new Error('The encryption secret is not set.')
+  if (tenant.keyCache?.secret !== secret) tenant.keyCache = { secret, key: crypto.createHash('sha256').update(`ansa:${secret}`).digest() }
+  return tenant.keyCache.key
 }
 
 /** Encrypt a secret (mail passwords) for storage. Format: v1:iv:tag:data (base64). */
