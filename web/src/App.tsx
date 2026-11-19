@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
-import { SessionContext, useLiveEvents, useMailboxes, useSession } from './lib/hooks'
+import { LiveContext, SessionContext, useLiveEvents, useMailboxes, useSession } from './lib/hooks'
 import type { Conversation, PlanState, User } from './lib/types'
 import { Spinner } from './ui'
 import { applyWorkspace, brand, workspace, type Workspace } from './lib/workspace'
@@ -19,6 +19,7 @@ interface Bootstrap {
   setupRequired: boolean
   user: User | null
   appUrl: string
+  liveTransport: 'sse' | 'websocket'
   workspace: Workspace
   hosted: boolean
   plan: PlanState | null
@@ -62,6 +63,7 @@ export function App() {
       value={{
         user: boot.data.user,
         appUrl: boot.data.appUrl,
+        liveTransport: boot.data.liveTransport,
         workspace: boot.data.workspace,
         hosted: boot.data.hosted,
         plan: boot.data.plan,
@@ -75,23 +77,25 @@ export function App() {
 }
 
 function Authed() {
-  useLiveEvents()
+  const live = useLiveEvents()
   return (
-    <Routes>
-      <Route element={<Shell />}>
-        <Route index element={<Home />} />
-        <Route path="m/:mailboxId/:folder" element={<InboxPage />} />
-        <Route path="m/:mailboxId/:folder/:conversationId" element={<InboxPage />} />
-        <Route path="search" element={<InboxPage search />} />
-        <Route path="search/:conversationId" element={<InboxPage search />} />
-        <Route path="c/:conversationId" element={<ConversationRedirect />} />
-        <Route path="customers" element={<CustomersPage />} />
-        <Route path="customers/:customerId" element={<CustomersPage />} />
-        <Route path="reports" element={<ReportsPage />} />
-        <Route path="settings/*" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
+    <LiveContext.Provider value={live}>
+      <Routes>
+        <Route element={<Shell />}>
+          <Route index element={<Home />} />
+          <Route path="m/:mailboxId/:folder" element={<InboxPage />} />
+          <Route path="m/:mailboxId/:folder/:conversationId" element={<InboxPage />} />
+          <Route path="search" element={<InboxPage search />} />
+          <Route path="search/:conversationId" element={<InboxPage search />} />
+          <Route path="c/:conversationId" element={<ConversationRedirect />} />
+          <Route path="customers" element={<CustomersPage />} />
+          <Route path="customers/:customerId" element={<CustomersPage />} />
+          <Route path="reports" element={<ReportsPage />} />
+          <Route path="settings/*" element={<SettingsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </LiveContext.Provider>
   )
 }
 

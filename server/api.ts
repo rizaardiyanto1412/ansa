@@ -1,4 +1,6 @@
 import { Hono } from 'hono'
+import { getCookie } from 'hono/cookie'
+import { currentTenant } from './tenant.ts'
 import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
 import { all, get, run, tx, now, parseJson } from './db.ts'
@@ -120,6 +122,7 @@ api.get('/bootstrap', (c) =>
     user: userFromSession(c),
     appUrl: config.appUrl,
     version: CORE_VERSION,
+    liveTransport: currentTenant().liveEvents.kind,
     workspace: publicWorkspace(),
     hosted: config.hosted,
     plan: hostedState()?.planState ?? null,
@@ -1018,8 +1021,18 @@ api.get('/reports', (c) => {
   return c.json(buildReport({ from, to, mailboxId: q.mailbox ? int(q.mailbox) : undefined, tzOffset: Number(q.tz) || 0 }))
 })
 
-api.get('/events', (c) =>
-  streamSSE(c, async (stream) => {
+api.get('/events', (c) => {
+  const { liveEvents } = currentTenant()
+  if (liveEvents.kind === 'websocket') {
+    if (c.req.header('upgrade')?.toLowerCase() !== 'websocket') return c.json({ error: 'Use WebSocket for live events.' }, 426)
+    const origin = c.req.header('origin')
+    if (origin && origin !== new URL(c.req.url).origin) return c.json({ error: 'Request blocked.' }, 403)
+    const credential = c.get('via') === 'api'
+      ? { kind: 'token' as const, hash: sha256(c.req.header('authorization')!.replace(/^Bearer\s+/i, '')) }
+      : { kind: 'session' as const, hash: sha256(getCookie(c, 'ansa_session')!) }
+    return liveEvents.connect(c.get('user'), credential)
+  }
+  return streamSSE(c, async (stream) => {
     let open = true
     const unsubscribe = subscribe((event) => {
       if (open) void stream.writeSSE({ data: JSON.stringify(event) }).catch(() => {})
@@ -1033,7 +1046,7 @@ api.get('/events', (c) =>
       await stream.sleep(25_000)
       if (open) await stream.writeSSE({ event: 'ping', data: '' }).catch(() => {})
     }
-  }),
-)
+  })
+})
 
 api.all('*', (c) => c.json({ error: 'Not found.' }, 404))

@@ -11,13 +11,15 @@ import { get } from '../server/db.ts'
 import type { Driver } from '../server/db.ts'
 import type { BlobStore } from '../server/blobs.ts'
 import { createTenant, runInTenant, type Tenant } from '../server/tenant.ts'
-import { createApp, prepareData, startTimers } from '../server/app.ts'
+import { createApp, prepareData } from '../server/app.ts'
+import { HibernatingEvents } from './live.ts'
+import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
 import type { ControlPlane, PlanState, SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
 import { pollAllMailboxes } from '../server/mail/imap.ts'
 import { dispatchScheduled, nextScheduledAt, wakeSnoozed } from '../server/services/conversations.ts'
-import { importIsRunning, importStep } from '../server/services/import-helpscout.ts'
+import { importStatus, importStep } from '../server/services/import-helpscout.ts'
 
 export interface StoreEnv {
   /** Which upload of the code is running. The Worker and the Durable Object can briefly differ after a deploy. */
@@ -119,6 +121,7 @@ function storedSecret(ctx: DurableObjectState): string {
 export class AnsaStore extends DurableObject<StoreEnv> {
   private tenant: Tenant
   private app: ReturnType<typeof createApp>
+  private live: HibernatingEvents
 
   constructor(ctx: DurableObjectState, env: StoreEnv) {
     super(ctx, env)
@@ -130,9 +133,15 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     config.imapPollOnly = true
 
     this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => readWorkspaceId(ctx, env)) : sqliteBlobs(ctx) })
+    this.live = new HibernatingEvents(ctx)
+    this.tenant.liveEvents = {
+      kind: 'websocket',
+      connect: (user, credential) => this.live.connect(user, credential),
+      viewers: () => this.live.viewers(),
+    }
     this.app = this.inTenant(() => {
       prepareData()
-      startTimers()
+      subscribe((event) => this.live.broadcast(event))
       return createApp()
     })
     this.tenant.control = env.CONTROL ?? null
@@ -174,9 +183,6 @@ export class AnsaStore extends DurableObject<StoreEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    // After a deploy, Cloudflare replaces this object only once no request is in flight. An open
-    // browser tab holds a live-update stream, so the old code could stay for hours. When the Worker
-    // in front says it runs newer code, restart now. Only on a read, which the Worker can repeat.
     const mine = codeStamp(this.env)
     const theirs = Number(request.headers.get(CODE_HEADER) || 0)
     if (mine && theirs > mine && (request.method === 'GET' || request.method === 'HEAD')) this.ctx.abort('A newer version was deployed.')
@@ -185,50 +191,91 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       this.learnUrl(request)
       const response = await this.app.fetch(request)
       await this.scheduleAlarm()
-      const out = new Response(response.body, response)
+      const out = response.status === 101 ? response : new Response(response.body, response)
       out.headers.set(CODE_HEADER, String(mine))
       return out
     })
   }
 
-  private lastPoll = 0
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    return this.inTenant(() => this.live.message(socket, message))
+  }
 
-  /** The alarm is the only thing that wakes this object without a visitor, so keep one set while there is work. */
-  private async scheduleAlarm() {
-    const { config } = this.tenant
-    // An import runs as a chain of short alarms: each one may only make a few dozen requests.
-    if (importIsRunning()) {
-      const current = await this.ctx.storage.getAlarm()
-      if (current === null || current > Date.now() + 3000) await this.ctx.storage.setAlarm(Date.now() + 1000)
+  webSocketClose(socket: WebSocket) {
+    return this.inTenant(() => this.live.close(socket))
+  }
+
+  webSocketError(socket: WebSocket) {
+    return this.inTenant(() => this.live.close(socket, 1011))
+  }
+
+  private pollDeadline(): number | null {
+    if (this.tenant.config.mailDisabled || !get(`SELECT 1 FROM mailboxes WHERE imap_enabled = 1 AND imap_host != '' LIMIT 1`)) return null
+    const stored = this.ctx.storage.kv.get<number>('nextPollAt')
+    if (stored !== undefined) return stored
+    const at = Date.now() + Math.max(10, this.tenant.config.imapPollSeconds) * 1000
+    this.ctx.storage.kv.put('nextPollAt', at)
+    return at
+  }
+
+  private importDeadline(): number | null {
+    const state = importStatus()
+    if (state.status !== 'running') {
+      this.ctx.storage.kv.delete('nextImportStepAt')
+      return null
+    }
+    let at = this.ctx.storage.kv.get<number>('nextImportStepAt')
+    if (at === undefined) {
+      at = Date.now() + 1000
+      this.ctx.storage.kv.put('nextImportStepAt', at)
+    }
+    return Math.max(at, state.waitUntil)
+  }
+
+  protected async scheduleAlarm() {
+    const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
+    const deadlines = [nextScheduledAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const current = await this.ctx.storage.getAlarm()
+    if (deadlines.length === 0) {
+      if (current !== null) await this.ctx.storage.deleteAlarm()
       return
     }
-    // A scheduled reply goes out on time, not at the next mail check.
-    const due = nextScheduledAt()
-    if (due !== null) {
-      const at = Math.max(Date.now() + 1000, due)
-      const current = await this.ctx.storage.getAlarm()
-      if (current === null || current > at) await this.ctx.storage.setAlarm(at)
-    }
-    const polling = !config.mailDisabled && get(`SELECT 1 FROM mailboxes WHERE imap_enabled = 1 AND imap_host != '' LIMIT 1`)
-    const snoozed = get('SELECT 1 FROM conversations WHERE snoozed_until IS NOT NULL LIMIT 1')
-    if (!polling && !snoozed) return
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + Math.max(10, config.imapPollSeconds) * 1000)
+    const at = Math.max(Date.now() + 1000, Math.min(...deadlines))
+    if (current !== at) await this.ctx.storage.setAlarm(at)
   }
 
   async alarm() {
     await this.inTenant(async () => {
+      const jobs = [
+        ['wakeSnoozed', () => wakeSnoozed()],
+        ['pruneSessions', () => pruneSessions()],
+        ['importStep', async () => {
+          try {
+            await importStep()
+          } finally {
+            this.ctx.storage.kv.put('nextImportStepAt', Date.now() + 1000)
+          }
+        }],
+        ['dispatchScheduled', () => dispatchScheduled()],
+        ['pollAllMailboxes', async () => {
+          const pollAt = this.pollDeadline()
+          if (pollAt !== null && pollAt <= Date.now()) {
+            try {
+              await pollAllMailboxes()
+            } finally {
+              this.ctx.storage.kv.put('nextPollAt', Date.now() + Math.max(10, this.tenant.config.imapPollSeconds) * 1000)
+            }
+          }
+        }],
+      ] satisfies [string, () => unknown][]
       try {
-        await importStep()
-        await dispatchScheduled()
-        // Mail is checked on its own schedule, however often the alarm fires.
-        if (Date.now() - this.lastPoll >= Math.max(10, this.tenant.config.imapPollSeconds) * 1000 - 500) {
-          this.lastPoll = Date.now()
-          wakeSnoozed()
-          pruneSessions()
-          await pollAllMailboxes()
+        for (const [job, run] of jobs) {
+          try {
+            await run()
+          } catch (err) {
+            console.error('[alarm]', { workspaceId: readWorkspaceId(this.ctx, this.env), job }, err)
+          }
         }
-      } catch (err) {
-        console.error('[alarm]', err)
       } finally {
         await this.scheduleAlarm()
       }
