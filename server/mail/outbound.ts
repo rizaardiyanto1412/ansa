@@ -211,10 +211,11 @@ export async function deliverThread(threadId: number): Promise<void> {
       html += `<br><div class="gmail_quote"><div style="color: #57606a;">On ${when}, ${who} wrote:</div><blockquote class="gmail_quote" style="margin: 8px 0 0; padding-left: 12px; border-left: 2px solid #d0d7de; color: #57606a;">${quoted}</blockquote></div>`
     }
 
-    const attachments = all<any>('SELECT * FROM attachments WHERE thread_id = ?', threadId).flatMap((a) => {
-      const content = blobs.get(a.storage_key)
-      return content ? [{ filename: a.filename as string, content: Buffer.from(content), contentType: a.mime as string }] : []
-    })
+    const attachments = []
+    for (const a of all<{ storage_key: string; filename: string; mime: string }>('SELECT storage_key, filename, mime FROM attachments WHERE thread_id = ?', threadId)) {
+      const content = await blobs.get(a.storage_key)
+      if (content) attachments.push({ filename: a.filename, content: Buffer.from(await new Response(content.body).arrayBuffer()), contentType: a.mime })
+    }
 
     await sendMail(mailbox, {
       to: parseJson<string[]>(thread.to_addrs, []),

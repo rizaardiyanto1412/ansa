@@ -489,7 +489,7 @@ async function importConversation(session: Session, c: HsConversation, mailboxId
     try {
       const data = await hs<{ data?: string }>(session, `/v2/conversations/${c.id}/attachments/${file.id}/data`)
       if (!data.data) throw new Error('empty')
-      storeAttachment(Buffer.from(data.data, 'base64'), { filename: file.filename || 'attachment', mime: file.mimeType, threadId })
+      await storeAttachment(Buffer.from(data.data, 'base64'), { filename: file.filename || 'attachment', mime: file.mimeType, threadId })
       files++
     } catch (err) {
       if (err instanceof SlowDown) throw err

@@ -35,7 +35,7 @@ function isAutomated(mail: ParsedMail): boolean {
 const SEEN_KEY = 'notification_replies_seen'
 
 /** Turn a teammate's emailed answer to a notification into a reply to the customer. */
-function teammateReply(mailbox: MailboxRow, mail: ParsedMail, ref: { conversationId: number; userId: number }, historical: boolean): IngestResult | null {
+async function teammateReply(mailbox: MailboxRow, mail: ParsedMail, ref: { conversationId: number; userId: number }, historical: boolean): Promise<IngestResult | null> {
   // Never act on old mail or on robots: an out-of-office answer must not reach the customer.
   if (historical || isAutomated(mail)) return null
   const seen = getSetting<string[]>(SEEN_KEY, [])
@@ -52,9 +52,12 @@ function teammateReply(mailbox: MailboxRow, mail: ParsedMail, ref: { conversatio
   }
 
   const bodyHtml = mail.html ? replyAboveMarker(mail.html) : textToHtml(replyAboveMarkerText(mail.text || ''))
-  const attachmentIds = mail.attachments
-    .filter((part) => !(part.cid && (part.related || part.contentDisposition === 'inline')))
-    .map((part) => storeAttachment(part.content, { filename: part.filename || 'attachment', mime: part.contentType, uploadedBy: user.id }).id)
+  const attachmentIds: number[] = []
+  for (const part of mail.attachments) {
+    if (part.cid && (part.related || part.contentDisposition === 'inline')) continue
+    const stored = await storeAttachment(part.content, { filename: part.filename || 'attachment', mime: part.contentType, uploadedBy: user.id })
+    attachmentIds.push(stored.id)
+  }
   if (!htmlToText(bodyHtml).trim() && attachmentIds.length === 0) {
     notifyReplyRejected(mailbox, user.email, ref.conversationId, 'Your reply was empty. Write your answer above the quoted notification.')
     return null
@@ -158,7 +161,7 @@ export async function ingestRaw(mailboxId: number, source: Buffer | string, opts
   let hasFiles = false
   for (const part of mail.attachments) {
     const inline = !!part.cid && (part.related || part.contentDisposition === 'inline') && /^image\//.test(part.contentType)
-    const stored = storeAttachment(part.content, {
+    const stored = await storeAttachment(part.content, {
       filename: part.filename || (inline ? 'image' : 'attachment'),
       mime: part.contentType,
       threadId,

@@ -1,10 +1,11 @@
 /**
- * One install as a Durable Object: its built-in SQLite database holds the data and the attachments,
+ * One install as a Durable Object: SQLite holds the data, and an optional R2 bucket holds attachments,
  * and its alarm checks the mailboxes for new email. Several objects can share an isolate, so each one
  * owns a tenant and every entry point runs inside it.
  */
 import { DurableObject } from 'cloudflare:workers'
 import crypto from 'node:crypto'
+import { z } from 'zod'
 import { readConfig } from '../server/config.ts'
 import { get } from '../server/db.ts'
 import type { Driver } from '../server/db.ts'
@@ -21,11 +22,24 @@ export interface StoreEnv {
   CF_VERSION_METADATA?: { id: string; timestamp: string }
   /** "1" when a control plane runs many workspaces. Self-hosted installs never set it. */
   ANSA_HOSTED?: string
+  ATTACHMENTS?: R2Bucket
   [name: string]: unknown
 }
 
 export const codeStamp = (env: StoreEnv) => Date.parse(env.CF_VERSION_METADATA?.timestamp || '') || 0
 export const CODE_HEADER = 'x-ansa-code'
+
+const workspaceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}(?![\s\S])/).brand<'WorkspaceId'>()
+
+export function readWorkspaceId(ctx: DurableObjectState, env: StoreEnv) {
+  const stored = ctx.storage.kv.get<unknown>('workspaceId')
+  if (stored == null && env.ANSA_HOSTED === '1') {
+    throw Object.assign(new Error('Workspace has not been provisioned.'), { name: 'NotProvisioned' })
+  }
+  const parsed = workspaceIdSchema.safeParse(stored ?? 'main')
+  if (!parsed.success) throw Object.assign(new Error('Invalid workspace ID.'), { name: 'Invalid' })
+  return parsed.data
+}
 
 const CHUNK = 1024 * 1024
 const toBuffer = (value: unknown) => (value instanceof Uint8Array ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) : value)
@@ -48,14 +62,14 @@ function sqliteBlobs(ctx: DurableObjectState): BlobStore {
   const { sql } = ctx.storage
   sql.exec('CREATE TABLE IF NOT EXISTS _blobs (key TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (key, seq)) WITHOUT ROWID')
   return {
-    put: (key, data) =>
+    put: async (key, data) =>
       ctx.storage.transactionSync(() => {
         sql.exec('DELETE FROM _blobs WHERE key = ?', key)
         for (let seq = 0, at = 0; at < data.byteLength || seq === 0; seq++, at += CHUNK) {
           sql.exec('INSERT INTO _blobs (key, seq, data) VALUES (?, ?, ?)', key, seq, toBuffer(data.subarray(at, at + CHUNK)))
         }
       }),
-    get: (key) => {
+    get: async (key) => {
       const parts = sql.exec('SELECT data FROM _blobs WHERE key = ? ORDER BY seq', key).toArray().map((row) => new Uint8Array(row.data as ArrayBuffer))
       if (parts.length === 0) return null
       const out = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0))
@@ -64,9 +78,28 @@ function sqliteBlobs(ctx: DurableObjectState): BlobStore {
         out.set(part, at)
         at += part.byteLength
       }
-      return out
+      return { body: out, size: out.byteLength }
     },
-    remove: (key) => void sql.exec('DELETE FROM _blobs WHERE key = ?', key),
+    remove: async (keys) => {
+      for (const key of keys) sql.exec('DELETE FROM _blobs WHERE key = ?', key)
+    },
+  }
+}
+
+function r2Blobs(bucket: R2Bucket, workspaceId: () => string): BlobStore {
+  const objectKey = (key: string) => `ws/${workspaceId()}/${key}`
+  return {
+    put: async (key, data) => { await bucket.put(objectKey(key), data) },
+    get: async (key) => {
+      const object = await bucket.get(objectKey(key))
+      return object ? { body: object.body, size: object.size } : null
+    },
+    remove: async (keys) => {
+      const prefix = `ws/${workspaceId()}/`
+      for (let at = 0; at < keys.length; at += 1000) {
+        await bucket.delete(keys.slice(at, at + 1000).map((key) => prefix + key))
+      }
+    },
   }
 }
 
@@ -90,12 +123,16 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       throw new Error('APP_SECRET is set in hosted mode. Remove it: every workspace must keep its own generated secret.')
     }
 
+    if (env.ANSA_HOSTED === '1' && !env.ATTACHMENTS) {
+      throw new Error('ATTACHMENTS is required in hosted mode.')
+    }
+
     const config = readConfig((name) => (typeof env[name] === 'string' ? env[name] : undefined))
     if (!config.secret) config.secret = storedSecret(ctx)
     if (!config.appUrlFixed) config.appUrl = ctx.storage.kv.get<string>('appUrl') ?? config.appUrl
     config.imapPollOnly = true
 
-    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: sqliteBlobs(ctx) })
+    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => readWorkspaceId(ctx, env)) : sqliteBlobs(ctx) })
     this.app = this.inTenant(() => {
       prepareData()
       startTimers()
