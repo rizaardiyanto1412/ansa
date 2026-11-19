@@ -829,7 +829,7 @@ api.post('/workspace/logo', requireAdmin, bodyLimit({ maxSize: LOGO_MAX_BYTES + 
   const key = `brand/logo-${Date.now().toString(36)}`
   await blobs.put(key, new Uint8Array(await file.arrayBuffer()))
   saveWorkspace({ logo: { key, mime: file.type, version: Date.now() } })
-  if (previous) await blobs.remove(previous.key)
+  if (previous) await blobs.remove([previous.key])
   publish({ type: 'refresh', scope: 'workspace' })
   return c.json({ workspace: publicWorkspace() })
 })
@@ -837,7 +837,7 @@ api.post('/workspace/logo', requireAdmin, bodyLimit({ maxSize: LOGO_MAX_BYTES + 
 api.delete('/workspace/logo', requireAdmin, async (c) => {
   const previous = getWorkspace().logo
   saveWorkspace({ logo: null })
-  if (previous) await blobs.remove(previous.key)
+  if (previous) await blobs.remove([previous.key])
   publish({ type: 'refresh', scope: 'workspace' })
   return c.json({ workspace: publicWorkspace() })
 })

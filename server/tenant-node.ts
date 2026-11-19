@@ -75,9 +75,11 @@ function openBlobs(attachmentsDir: string): BlobStore {
         throw err
       }
     },
-    remove: async (key) => {
-      const file = fileOf(key)
-      if (file) await rm(file, { force: true })
+    remove: async (keys) => {
+      for (const key of keys) {
+        const file = fileOf(key)
+        if (file) await rm(file, { force: true })
+      }
     },
   }
 }

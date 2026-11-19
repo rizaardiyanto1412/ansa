@@ -5,6 +5,7 @@
  */
 import { DurableObject } from 'cloudflare:workers'
 import crypto from 'node:crypto'
+import { z } from 'zod'
 import { readConfig } from '../server/config.ts'
 import { get } from '../server/db.ts'
 import type { Driver } from '../server/db.ts'
@@ -27,6 +28,18 @@ export interface StoreEnv {
 
 export const codeStamp = (env: StoreEnv) => Date.parse(env.CF_VERSION_METADATA?.timestamp || '') || 0
 export const CODE_HEADER = 'x-ansa-code'
+
+const workspaceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}(?![\s\S])/).brand<'WorkspaceId'>()
+
+export function readWorkspaceId(ctx: DurableObjectState, env: StoreEnv) {
+  const stored = ctx.storage.kv.get<unknown>('workspaceId')
+  if (stored == null && env.ANSA_HOSTED === '1') {
+    throw Object.assign(new Error('Workspace has not been provisioned.'), { name: 'NotProvisioned' })
+  }
+  const parsed = workspaceIdSchema.safeParse(stored ?? 'main')
+  if (!parsed.success) throw Object.assign(new Error('Invalid workspace ID.'), { name: 'Invalid' })
+  return parsed.data
+}
 
 const CHUNK = 1024 * 1024
 const toBuffer = (value: unknown) => (value instanceof Uint8Array ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) : value)
@@ -67,7 +80,9 @@ function sqliteBlobs(ctx: DurableObjectState): BlobStore {
       }
       return { body: out, size: out.byteLength }
     },
-    remove: async (key) => void sql.exec('DELETE FROM _blobs WHERE key = ?', key),
+    remove: async (keys) => {
+      for (const key of keys) sql.exec('DELETE FROM _blobs WHERE key = ?', key)
+    },
   }
 }
 
@@ -79,7 +94,12 @@ function r2Blobs(bucket: R2Bucket, workspaceId: () => string): BlobStore {
       const object = await bucket.get(objectKey(key))
       return object ? { body: object.body, size: object.size } : null
     },
-    remove: async (key) => { await bucket.delete(objectKey(key)) },
+    remove: async (keys) => {
+      const prefix = `ws/${workspaceId()}/`
+      for (let at = 0; at < keys.length; at += 1000) {
+        await bucket.delete(keys.slice(at, at + 1000).map((key) => prefix + key))
+      }
+    },
   }
 }
 
@@ -103,12 +123,16 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       throw new Error('APP_SECRET is set in hosted mode. Remove it: every workspace must keep its own generated secret.')
     }
 
+    if (env.ANSA_HOSTED === '1' && !env.ATTACHMENTS) {
+      throw new Error('ATTACHMENTS is required in hosted mode.')
+    }
+
     const config = readConfig((name) => (typeof env[name] === 'string' ? env[name] : undefined))
     if (!config.secret) config.secret = storedSecret(ctx)
     if (!config.appUrlFixed) config.appUrl = ctx.storage.kv.get<string>('appUrl') ?? config.appUrl
     config.imapPollOnly = true
 
-    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => ctx.storage.kv.get<string>('workspaceId') ?? 'main') : sqliteBlobs(ctx) })
+    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => readWorkspaceId(ctx, env)) : sqliteBlobs(ctx) })
     this.app = this.inTenant(() => {
       prepareData()
       startTimers()

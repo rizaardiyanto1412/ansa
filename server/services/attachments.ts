@@ -46,5 +46,5 @@ export async function attachmentFile(id: number): Promise<(StoredBlob & { filena
 }
 
 export async function removeFiles(keys: string[]) {
-  for (const key of keys) await blobs.remove(key)
+  await blobs.remove(keys)
 }

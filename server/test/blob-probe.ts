@@ -14,9 +14,17 @@ export async function checkBlobStore(store: BlobStore, streamed = false) {
     assert.equal(saved.size, data.byteLength)
     assert.deepEqual(new Uint8Array(await new Response(saved.body).arrayBuffer()), data)
   }
-  await store.remove(key)
+  await store.remove([key])
   assert.equal(await store.get(key), null, 'remove finishes before it resolves')
-  await store.remove(key)
+  await store.remove([key])
+  const batch = ['batch/first', 'batch/second', 'batch/third']
+  for (const key of batch) await store.put(key, bytes.subarray(0, 4))
+  await store.put('batch/retained', bytes.subarray(0, 4))
+  await store.remove([...batch, batch[0], 'batch/missing'])
+  for (const key of batch) assert.equal(await store.get(key), null, 'batch removal deletes every requested blob')
+  await store.remove([])
+  assert.ok(await store.get('batch/retained'), 'batch removal leaves unrequested blobs intact')
+  await store.remove(['batch/retained'])
 }
 
 export async function checkAttachmentApi(send: (path: string, init?: RequestInit) => Promise<Response>) {

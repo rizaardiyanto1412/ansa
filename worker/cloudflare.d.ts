@@ -30,5 +30,5 @@ interface DurableObjectNamespace {
 interface R2Bucket {
   put(key: string, value: Uint8Array): Promise<unknown>
   get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>
-  delete(key: string): Promise<void>
+  delete(keys: string | string[]): Promise<void>
 }

@@ -33,12 +33,15 @@ export class ProbeStore extends AnsaStore {
         case '/__blobs':
           await this.inTenant(() => checkBlobStore(currentTenant().blobs, !!this.env.ATTACHMENTS))
           return Response.json({ ok: true })
+        case '/__remove-batch':
+          await this.inTenant(() => currentTenant().blobs.remove(Array.from({ length: 1001 }, (_, i) => `batch/${i}`)))
+          return Response.json({ ok: true })
         case '/__blob':
           return this.inTenant(async () => {
             const store = currentTenant().blobs
             const key = 'same/key.txt'
             if (request.method === 'PUT') await store.put(key, new TextEncoder().encode(await request.text()))
-            if (request.method === 'DELETE') await store.remove(key)
+            if (request.method === 'DELETE') await store.remove([key])
             const blob = await store.get(key)
             return new Response(blob?.body ?? null, { status: blob ? 200 : 404 })
           })
