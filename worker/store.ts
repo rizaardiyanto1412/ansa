@@ -25,7 +25,6 @@ export interface StoreEnv {
   [name: string]: unknown
 }
 
-/** When the running code was uploaded, as a number. 0 when unknown (local development). */
 export const codeStamp = (env: StoreEnv) => Date.parse(env.CF_VERSION_METADATA?.timestamp || '') || 0
 export const CODE_HEADER = 'x-ansa-code'
 
@@ -117,7 +116,6 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     })
   }
 
-  /** Every way into this object (fetch, alarm, RPC methods) does its work through here. */
   protected inTenant<T>(fn: () => T): T {
     return runInTenant(this.tenant, fn)
   }
