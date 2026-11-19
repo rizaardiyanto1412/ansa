@@ -533,7 +533,8 @@ function releaseScheduled(threadId: number, actor: Actor): boolean {
     const conv = get<any>('SELECT * FROM conversations WHERE id = ?', t.conversation_id)
     conversationId = conv.id
     mailboxId = conv.mailbox_id
-    const at = now()
+    const newest = get<{ at: number | null }>('SELECT MAX(created_at) AS at FROM threads WHERE conversation_id = ? AND id != ?', conv.id, threadId)?.at ?? 0
+    const at = Math.max(now(), newest + 1)
     const event = parseJson<{ status?: Status }>(t.event, {})
     const status: Status = event.status && STATUSES.includes(event.status) ? event.status : 'closed'
     // Answer the newest message, which may have arrived after this reply was written.
