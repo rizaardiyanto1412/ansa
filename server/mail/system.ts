@@ -15,7 +15,7 @@ export async function sendSystemEmail(mail: SystemEmail): Promise<void> {
     const { control } = currentTenant()
     const state = hostedState()
     if (!control || !state) throw new AppError('This workspace cannot send email yet.', 503)
-    await control.sendSystemEmail(state.workspaceId, mail)
+    await control.sendSystemEmail(state.workspaceId, { ...mail, headers: { ...mail.headers, 'X-Ansa-Kind': mail.kind } })
     return
   }
   const mailbox = get<MailboxRow>(`SELECT * FROM mailboxes WHERE smtp_host != '' ORDER BY id LIMIT 1`)
@@ -26,6 +26,6 @@ export async function sendSystemEmail(mail: SystemEmail): Promise<void> {
     html: mail.html,
     text: mail.text,
     fromName: brandName(),
-    headers: { ...mail.headers, 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' },
+    headers: { ...mail.headers, 'X-Ansa-Kind': mail.kind, 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' },
   })
 }

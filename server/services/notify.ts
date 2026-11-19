@@ -67,7 +67,7 @@ export function parseNotificationRef(messageId: string): { conversationId: numbe
   return { conversationId: Number(conversation), userId: Number(user) }
 }
 
-const NOTIFICATION_HEADERS = { 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' }
+const NOTIFICATION_HEADERS = { 'X-Ansa-Kind': 'notification', 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' }
 
 const canNotify = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.smtp_host)
 const repliesComeBack = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.imap_enabled && !!mailbox.imap_host)
@@ -77,6 +77,7 @@ function sendToTeammate(mailbox: MailboxRow, mail: { to: string; subject: string
   const sending =
     mailbox.kind === 'managed'
       ? sendSystemEmail({
+          kind: 'notification',
           to: mail.to,
           subject: mail.subject,
           html: mail.html,

@@ -312,7 +312,7 @@ export class AnsaStore extends DurableObject<StoreEnv> implements WorkspaceResto
     return this.ctx.storage.getBookmarkForTime(this.restoreTime(atMs))
   }
 
-  async restoreTo(atMs: number, confirm: string): Promise<never> {
+  async restoreTo(atMs: number, confirm: string): Promise<void> {
     const workspaceId = this.hostedWorkspaceId()
     if (confirm !== workspaceId) throw rpcError('Invalid', 'The confirmation does not match this workspace ID.')
     const bookmark = await this.ctx.storage.getBookmarkForTime(this.restoreTime(atMs))

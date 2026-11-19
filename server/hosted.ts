@@ -45,7 +45,7 @@ export const RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 
 export interface WorkspaceRestoreRpc {
   restoreBookmark(atMs: number): Promise<string>
-  restoreTo(atMs: number, confirm: string): Promise<never>
+  restoreTo(atMs: number, confirm: string): Promise<void>
 }
 
 export interface HostedState {
@@ -57,7 +57,10 @@ export interface HostedState {
   planState: PlanState
 }
 
+export type SystemEmailKind = 'invite' | 'reset' | 'sign-in' | 'notification'
+
 export interface SystemEmail {
+  kind: SystemEmailKind
   to: string
   subject: string
   html: string
