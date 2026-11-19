@@ -13,7 +13,7 @@ import { isEmail, normEmail } from './customers.ts'
 export const CORE_VERSION: string = pkg.version
 
 const ProvisionSchema = z.object({
-  workspaceId: z.string().min(1).max(200),
+  workspaceId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
   workspaceName: z.string().trim().min(1).max(100),
   appUrl: z
     .string()

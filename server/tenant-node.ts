@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -54,22 +55,31 @@ function openDb(dbPath: string): Driver {
 function openBlobs(attachmentsDir: string): BlobStore {
   const fileOf = (key: string) => {
     const file = path.join(attachmentsDir, key)
-    return file.startsWith(attachmentsDir) ? file : null
+    return file.startsWith(`${path.resolve(attachmentsDir)}${path.sep}`) ? file : null
   }
   return {
-    put: (key, data) => {
+    put: async (key, data) => {
       const file = fileOf(key)
       if (!file) throw new Error('Bad file key.')
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, data)
+      await mkdir(path.dirname(file), { recursive: true })
+      await writeFile(file, data)
     },
-    get: (key) => {
+    get: async (key) => {
       const file = fileOf(key)
-      return file && fs.existsSync(file) ? fs.readFileSync(file) : null
+      if (!file) return null
+      try {
+        const data = await readFile(file)
+        return { body: Uint8Array.from(data), size: data.byteLength }
+      } catch (err) {
+        if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return null
+        throw err
+      }
     },
-    remove: (key) => {
-      const file = fileOf(key)
-      if (file) fs.rm(file, { force: true }, () => {})
+    remove: async (keys) => {
+      for (const key of keys) {
+        const file = fileOf(key)
+        if (file) await rm(file, { force: true })
+      }
     },
   }
 }

@@ -58,6 +58,13 @@ test('work outside a workspace fails on Workers, where there is no fallback', as
   assert.match(await response.text(), /No workspace is active/)
 })
 
+test('decrypting outside a workspace throws on Workers, and invalid ciphertext inside one gives an empty string', async () => {
+  const response = await harness.fetch('http://a.example.test/__decrypt-outside')
+  assert.equal(response.status, 500)
+  assert.match(await response.text(), /No workspace is active/, 'valid ciphertext outside a workspace')
+  assert.equal((await call<{ opened: string }>('a', '/__decrypt-invalid')).opened, '', 'invalid ciphertext inside a workspace')
+})
+
 test('hosted mode refuses to start with a shared APP_SECRET', async () => {
   const start = (vars: Record<string, string>) => harness.update({ workers: [{ configPath, vars }] })
   try {
@@ -66,12 +73,23 @@ test('hosted mode refuses to start with a shared APP_SECRET', async () => {
     assert.equal(refused.status, 500)
     assert.match(await refused.text(), /APP_SECRET is set in hosted mode/)
 
-    await start({ ANSA_HOSTED: '1' })
+    await harness.update({ workers: [{ configPath, env: 'r2', vars: { ANSA_HOSTED: '1' } }] })
     assert.deepEqual(await call('a', '/healthz'), { ok: true }, 'hosted mode starts without APP_SECRET')
 
     await start({ APP_SECRET: 'x'.repeat(32) })
     assert.deepEqual(await call('a', '/healthz'), { ok: true }, 'a self-hosted install may set APP_SECRET')
   } finally {
     await start({})
+  }
+})
+
+test('hosted mode refuses to start without ATTACHMENTS', async () => {
+  try {
+    await harness.update({ workers: [{ configPath, vars: { ANSA_HOSTED: '1' } }] })
+    const response = await harness.fetch('http://missing-bucket.example.test/healthz')
+    assert.equal(response.status, 500)
+    assert.match(await response.text(), /ATTACHMENTS is required in hosted mode/)
+  } finally {
+    await harness.update({ workers: [{ configPath }] })
   }
 })

@@ -45,6 +45,9 @@ test('a control plane provisions a workspace over Durable Object RPC', async () 
   assert.equal((await call('POST', '/api/setup', { name: 'Mallory', email: 'mallory@evil.test', password: 'long enough password' })).status, 404, 'POST /api/setup is off')
 
   assert.equal((await rpc('setPlan', input.planState)).error?.name, 'NotProvisioned', 'the error name crosses the RPC boundary')
+  const early = await harness.fetch(`${HOST}/__blob`, { method: 'PUT', body: 'too early' })
+  assert.equal(early.status, 500, 'attachments have no home before provision')
+  assert.match(await early.text(), /NotProvisioned/)
   assert.equal((await rpc('provision', { ...input, appUrl: 'nonsense' })).error?.name, 'Invalid')
 
   const first = await rpc('provision', input)
@@ -54,6 +57,11 @@ test('a control plane provisions a workspace over Durable Object RPC', async () 
   const health = (await rpc('health')).result
   assert.deepEqual({ users: health.users, mailboxes: health.mailboxes, coreVersion: typeof health.coreVersion }, { users: 1, mailboxes: 0, coreVersion: 'string' })
   assert.ok(health.schemaVersion >= 8, `schema version ${health.schemaVersion}`)
+
+  const stored = await harness.fetch(`${HOST}/__blob`, { method: 'PUT', body: 'kept' })
+  assert.equal(await stored.text(), 'kept', 'provision gives attachments their home')
+  const { ATTACHMENTS: bucket } = await harness.getWorker<{ ATTACHMENTS: { get(key: string): Promise<{ text(): Promise<string> } | null> } }>().getEnv()
+  assert.equal(await (await bucket.get('ws/acme/same/key.txt'))?.text(), 'kept', 'under the workspace id from provision')
 
   const after = (await call('GET', '/api/bootstrap')).data
   assert.equal(after.workspace.name, 'Acme Support', 'the second call changed nothing')
