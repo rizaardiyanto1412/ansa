@@ -1,14 +1,15 @@
 import { useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, CircleAlert, CircleCheck, Mail, Plus, RefreshCw } from 'lucide-react'
 import { api } from '../lib/api'
 import { brand } from '../lib/workspace'
 import { ago } from '../lib/format'
-import { useMailboxes } from '../lib/hooks'
+import { useMailboxes, useSession } from '../lib/hooks'
 import type { Mailbox } from '../lib/types'
 import { Banner, Button, Card, EmptyState, Field, Input, PageHeader, Select, Spinner, Switch, Textarea, cx, useFeedback } from '../ui'
 import { RichField } from '../inbox/Editor'
+import { ForwardingSetup, ManagedMailboxStart, SendingDomain } from './Managed'
 
 type Security = 'starttls' | 'ssl' | 'none'
 interface FormState {
@@ -103,6 +104,7 @@ export function MailboxForm({ mailbox, onSaved, compact = false }: { mailbox?: M
   const text = (key: keyof FormState) => (e: { target: { value: string } }) => set(key, e.target.value as never)
 
   // Follows the host field, so typing your own server clears the highlighted provider.
+  const managed = mailbox?.kind === 'managed'
   const preset = PRESETS.find((p) => p.smtpHost === form.smtpHost.trim().toLowerCase())?.id ?? null
   const [pickedOther, setPickedOther] = useState(false)
   const other = !preset && (pickedOther || form.smtpHost.trim() !== '')
@@ -119,6 +121,7 @@ export function MailboxForm({ mailbox, onSaved, compact = false }: { mailbox?: M
   const payload = () => ({
     ...form,
     id: mailbox?.id,
+    kind: mailbox?.kind ?? 'imap',
     imapUser: form.sameLogin ? form.smtpUser : form.imapUser,
     imapPassword: form.sameLogin ? form.smtpPassword : form.imapPassword,
     // With a shared login and no new password typed, the server reuses the saved SMTP password.
@@ -178,6 +181,8 @@ export function MailboxForm({ mailbox, onSaved, compact = false }: { mailbox?: M
         </div>
       </Section>
 
+      {!managed && (
+        <>
       <Section title="Email provider" description="Pick your provider to fill in the server details, or choose Other to enter your own.">
         <div className="flex flex-wrap gap-2">
           {PRESETS.map((p) => (
@@ -275,6 +280,8 @@ export function MailboxForm({ mailbox, onSaved, compact = false }: { mailbox?: M
           </>
         )}
       </Section>
+        </>
+      )}
 
       {!compact && (
         <>
@@ -323,11 +330,17 @@ function SyncStatus({ mailbox }: { mailbox: Mailbox }) {
   return <Banner>Connecting to the mail server…</Banner>
 }
 
+const receivingLabel = (m: Mailbox) =>
+  m.kind === 'managed' ? (m.receiving ? 'Receiving email' : 'Waiting for forwarding') : m.syncStatus === 'error' ? 'Connection problem' : !m.imapEnabled ? 'Not receiving' : m.syncStatus === 'ok' ? 'Receiving email' : 'Connecting…'
+
 export function MailboxesSettings() {
   const { mailboxId } = useParams()
   const navigate = useNavigate()
   const client = useQueryClient()
   const { toast, confirm } = useFeedback()
+  const { hosted } = useSession()
+  const [search] = useSearchParams()
+  const [advanced, setAdvanced] = useState(search.get('advanced') === '1')
   const mailboxes = useMailboxes()
   if (mailboxes.isPending) return <Spinner />
   const list = mailboxes.data ?? []
@@ -336,7 +349,11 @@ export function MailboxesSettings() {
     return (
       <div className="flex flex-col gap-5">
         <PageHeader title="Add a mailbox" description="Connect a shared address such as support@ or billing@." />
-        <MailboxForm onSaved={(m) => navigate(`/settings/mailboxes/${m.id}`)} />
+        {hosted && !advanced ? (
+          <ManagedMailboxStart onCreated={(m) => navigate(`/settings/mailboxes/${m.id}`)} onAdvanced={() => setAdvanced(true)} />
+        ) : (
+          <MailboxForm onSaved={(m) => navigate(`/settings/mailboxes/${m.id}`)} />
+        )}
       </div>
     )
   }
@@ -346,7 +363,7 @@ export function MailboxesSettings() {
     const remove = async () => {
       const ok = await confirm({
         title: `Delete ${current.name}?`,
-        body: 'Every conversation in this mailbox is deleted with it. Email in your own mail account is not touched. You cannot undo this.',
+        body: `Every conversation in this mailbox is deleted with it. Email in your own mail account is not touched. ${current.kind === 'managed' ? 'Turn off forwarding at your email provider too: mail sent to the old forwarding address is refused. ' : ''}You cannot undo this.`,
         confirmLabel: 'Delete mailbox',
         danger: true,
       })
@@ -369,7 +386,14 @@ export function MailboxesSettings() {
             </>
           }
         />
-        <SyncStatus mailbox={current} />
+        {current.managed ? (
+          <>
+            <ForwardingSetup mailbox={current} managed={current.managed} />
+            <SendingDomain mailbox={current} managed={current.managed} />
+          </>
+        ) : (
+          <SyncStatus mailbox={current} />
+        )}
         <MailboxForm key={current.id} mailbox={current} onSaved={() => {}} />
         <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
           <div>
@@ -410,9 +434,7 @@ export function MailboxesSettings() {
                 <span className="block text-sm font-medium">{m.name}</span>
                 <span className="block truncate text-[13px] text-fg-3">{m.email}</span>
               </span>
-              <span className={cx('text-[13px]', m.syncStatus === 'error' ? 'text-danger' : m.syncStatus === 'ok' ? 'text-ok' : 'text-fg-3')}>
-                {m.syncStatus === 'error' ? 'Connection problem' : !m.imapEnabled ? 'Not receiving' : m.syncStatus === 'ok' ? 'Receiving email' : 'Connecting…'}
-              </span>
+              <span className={cx('text-[13px]', receivingLabel(m) === 'Connection problem' ? 'text-danger' : receivingLabel(m) === 'Receiving email' ? 'text-ok' : 'text-fg-3')}>{receivingLabel(m)}</span>
               <ChevronRight className="size-4 text-fg-3" aria-hidden />
             </Link>
           ))}

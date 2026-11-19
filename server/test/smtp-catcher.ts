@@ -8,14 +8,26 @@ export interface CaughtMail {
   text: string
 }
 
-export async function startSmtpCatcher(port = 0): Promise<{ port: number; inbox: CaughtMail[]; close: () => Promise<void> }> {
+export interface CatcherScript {
+  greeting?: string
+  nextRcpt?: string
+}
+
+export async function startSmtpCatcher(port = 0): Promise<{ port: number; inbox: CaughtMail[]; script: CatcherScript; connections: () => number; close: () => Promise<void> }> {
   const inbox: CaughtMail[] = []
+  const script: CatcherScript = {}
+  let connections = 0
   const server = net.createServer((socket) => {
     let buffer = ''
     let inData = false
+    connections++
     socket.setEncoding('utf8')
-    socket.write('220 catcher ESMTP\r\n')
     socket.on('error', () => {})
+    if (script.greeting) {
+      socket.end(`${script.greeting}\r\n`)
+      return
+    }
+    socket.write('220 catcher ESMTP\r\n')
     socket.on('data', (chunk: string) => {
       buffer += chunk
       for (;;) {
@@ -41,7 +53,10 @@ export async function startSmtpCatcher(port = 0): Promise<{ port: number; inbox:
           inData = true
           socket.write('354 go ahead\r\n')
         } else if (command.startsWith('QUIT')) socket.end('221 bye\r\n')
-        else socket.write('250 ok\r\n')
+        else if (command.startsWith('RCPT') && script.nextRcpt) {
+          socket.write(`${script.nextRcpt}\r\n`)
+          script.nextRcpt = undefined
+        } else socket.write('250 ok\r\n')
       }
     })
   })
@@ -49,6 +64,8 @@ export async function startSmtpCatcher(port = 0): Promise<{ port: number; inbox:
   return {
     port: (server.address() as net.AddressInfo).port,
     inbox,
+    script,
+    connections: () => connections,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   }
 }

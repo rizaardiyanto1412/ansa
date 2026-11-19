@@ -335,6 +335,31 @@ const migrations: string[] = [
   ) WITHOUT ROWID;
   CREATE INDEX reset_outbox_next ON reset_outbox(next_at);
   `,
+  `
+  ALTER TABLE mailboxes ADD COLUMN kind TEXT NOT NULL DEFAULT 'imap';
+  ALTER TABLE mailboxes ADD COLUMN inbound_address TEXT NOT NULL DEFAULT '';
+  ALTER TABLE mailboxes ADD COLUMN sending_domain TEXT NOT NULL DEFAULT '';
+  ALTER TABLE mailboxes ADD COLUMN sending_status TEXT NOT NULL DEFAULT 'none';
+  ALTER TABLE mailboxes ADD COLUMN sending_records TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE mailboxes ADD COLUMN sending_since INTEGER;
+  ALTER TABLE mailboxes ADD COLUMN sending_checked_at INTEGER;
+  ALTER TABLE mailboxes ADD COLUMN forwarding_confirmation TEXT;
+  ALTER TABLE mailboxes ADD COLUMN first_inbound_at INTEGER;
+  ALTER TABLE threads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE threads ADD COLUMN retry_at INTEGER;
+  ALTER TABLE threads ADD COLUMN provider_id TEXT;
+  CREATE INDEX threads_retry_at ON threads(retry_at) WHERE retry_at IS NOT NULL;
+  CREATE TABLE inbound_seen (
+    key TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE INDEX inbound_seen_created ON inbound_seen(created_at);
+  CREATE TABLE outbound_log (
+    id INTEGER PRIMARY KEY,
+    sent_at INTEGER NOT NULL
+  );
+  CREATE INDEX outbound_log_sent ON outbound_log(sent_at);
+  `,
 ]
 
 export const schemaVersion = () => get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0

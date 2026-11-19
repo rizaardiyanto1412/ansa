@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ImageUp, Trash2 } from 'lucide-react'
+import { Download, ImageUp, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useSession } from '../lib/hooks'
 import type { Workspace } from '../lib/workspace'
@@ -106,6 +106,16 @@ export function WorkspaceSettings() {
             </Banner>
           ) : null}
         </div>
+      </Card>
+
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-5">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[15px] font-semibold">Export workspace</h2>
+          <p className="mt-0.5 text-[13px] text-fg-3">Download every conversation, customer, setting and attachment as one zip file. Passwords and other secrets are left out.</p>
+        </div>
+        <a href="/api/workspace/export" download>
+          <Button icon={<Download />}>Export workspace</Button>
+        </a>
       </Card>
     </div>
   )

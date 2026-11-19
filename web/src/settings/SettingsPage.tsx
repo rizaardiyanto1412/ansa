@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bookmark, Building, Download, KeyRound, Mail, Plus, Puzzle, Tag as TagIcon, Trash2, UserRound, Users, Workflow as WorkflowIcon } from 'lucide-react'
+import { Bookmark, Building, CreditCard, Download, KeyRound, Mail, Plus, Puzzle, Tag as TagIcon, Trash2, UserRound, Users, Workflow as WorkflowIcon } from 'lucide-react'
 import { api } from '../lib/api'
 import { plural } from '../lib/format'
 import { useDocumentTitle, useSession, useTags, useUsers } from '../lib/hooks'
@@ -14,9 +14,10 @@ import { ApiSettings } from './ApiMcp'
 import { AppsSettings } from './Apps'
 import { WorkspaceSettings } from './Workspace'
 import { ImportSettings } from './Import'
+import { BillingSettings } from './Billing'
 import { workspace } from '../lib/workspace'
 
-const NAV: { to: string; label: string; icon: ReactNode; admin?: boolean }[] = [
+const NAV: { to: string; label: string; icon: ReactNode; admin?: boolean; hosted?: boolean }[] = [
   { to: 'profile', label: 'Profile', icon: <UserRound /> },
   { to: 'mailboxes', label: 'Mailboxes', icon: <Mail />, admin: true },
   { to: 'team', label: 'Team', icon: <Users /> },
@@ -25,15 +26,16 @@ const NAV: { to: string; label: string; icon: ReactNode; admin?: boolean }[] = [
   { to: 'workflows', label: 'Workflows', icon: <WorkflowIcon />, admin: true },
   { to: 'apps', label: 'Apps', icon: <Puzzle />, admin: true },
   { to: 'workspace', label: 'Workspace', icon: <Building />, admin: true },
+  { to: 'billing', label: 'Billing', icon: <CreditCard />, admin: true, hosted: true },
   { to: 'import', label: 'Import', icon: <Download />, admin: true },
   { to: 'api', label: 'API & MCP', icon: <KeyRound /> },
 ]
 
 export function SettingsPage() {
   useDocumentTitle('Settings')
-  const { user } = useSession()
+  const { user, hosted } = useSession()
   const admin = user.role === 'admin'
-  const items = NAV.filter((n) => !n.admin || admin)
+  const items = NAV.filter((n) => (!n.admin || admin) && (!n.hosted || hosted))
   return (
     <div className="flex h-full flex-col bg-canvas md:flex-row">
       <nav aria-label="Settings" className="shrink-0 border-line bg-surface md:w-52 md:border-r md:p-3">
@@ -70,6 +72,7 @@ export function SettingsPage() {
             {admin && <Route path="workflows" element={<WorkflowsSettings />} />}
             {admin && <Route path="apps" element={<AppsSettings />} />}
             {admin && <Route path="workspace" element={<WorkspaceSettings />} />}
+            {admin && hosted && <Route path="billing" element={<BillingSettings />} />}
             {admin && <Route path="import" element={<ImportSettings />} />}
             <Route path="api" element={<ApiSettings />} />
             <Route path="*" element={<Navigate to="profile" replace />} />

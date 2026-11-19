@@ -33,7 +33,7 @@ import type { Attachment, Conversation, ConversationSummary, Status, Thread, Vie
 import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
 import { lineHtml } from './Editor'
-import { STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
+import { brand, STATUS_DOT, statusOptions, workspace } from '../lib/workspace'
 import { LightboxProvider, isImageType, useLightbox, type LightboxImage } from './Lightbox'
 import { whenLabel } from './SendLater'
 import { CustomerPanel } from './CustomerPanel'
@@ -878,6 +878,7 @@ function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean
               <span className="truncate text-sm font-semibold">{name}</span>
             </button>
             {thread.state === 'sending' && <span className="shrink-0 text-xs text-fg-3">Sending…</span>}
+            {thread.state === 'queued' && <span className="shrink-0 rounded-md bg-warn-soft px-1.5 py-0.5 text-xs font-medium text-warn">Waiting to send</span>}
             {scheduled && <span className="shrink-0 rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent-fg">{thread.sendAt ? 'Scheduled' : 'On hold'}</span>}
             <time className={cx('shrink-0 text-xs tabular-nums', isNote ? 'text-note-fg' : 'text-fg-3')} title={fullTime(thread.createdAt)}>
               {timeOnly.format(thread.createdAt)}
@@ -930,6 +931,15 @@ function Message({ thread, folded, onToggle }: { thread: Thread; folded: boolean
                 <Button size="sm" disabled={act.isPending} onClick={() => act.mutate('cancel')}>
                   {thread.sendAt ? 'Cancel' : 'Back to draft'}
                 </Button>
+              </div>
+            )}
+            {thread.state === 'queued' && (
+              <div role="status" className="mb-4 flex items-start gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[13px] text-warn">
+                <Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Not sent yet. {brand()} sends it automatically{thread.retryAt ? ` ${thread.retryAt <= Date.now() ? 'in a moment' : whenLabel(thread.retryAt)}` : ''}.</p>
+                  <p>{thread.error}</p>
+                </div>
               </div>
             )}
             {thread.state === 'failed' && (

@@ -1,8 +1,9 @@
 import crypto from 'node:crypto'
 import { get } from '../db.ts'
 import { config } from '../config.ts'
-import { escapeHtml, REPLY_MARKER } from '../mail/html.ts'
+import { escapeHtml, htmlToText, REPLY_MARKER } from '../mail/html.ts'
 import { sendMail, wrapEmailHtml, type MailboxRow } from '../mail/outbound.ts'
+import { sendSystemEmail } from '../mail/system.ts'
 import { getConversation, type ThreadView } from './conversations.ts'
 import { brandName, statusLabel } from './workspace.ts'
 
@@ -66,16 +67,35 @@ export function parseNotificationRef(messageId: string): { conversationId: numbe
   return { conversationId: Number(conversation), userId: Number(user) }
 }
 
+const NOTIFICATION_HEADERS = { 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' }
+
+const canNotify = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.smtp_host)
+const repliesComeBack = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.imap_enabled && !!mailbox.imap_host)
+
+/** A managed mailbox has no server of its own: the control plane sends, and answers return to the inbound address. */
+function sendToTeammate(mailbox: MailboxRow, mail: { to: string; subject: string; html: string; messageId?: string }) {
+  const fromName = `${mailbox.name} (${brandName()})`
+  const sending =
+    mailbox.kind === 'managed'
+      ? sendSystemEmail({
+          to: mail.to,
+          subject: mail.subject,
+          html: mail.html,
+          text: htmlToText(mail.html),
+          headers: { ...NOTIFICATION_HEADERS, ...(mail.messageId ? { 'Message-ID': mail.messageId } : {}), 'Reply-To': `"${fromName.replace(/["\\\r\n]/g, '')}" <${mailbox.inbound_address}>` },
+        })
+      : sendMail(mailbox, { to: [mail.to], subject: mail.subject, html: mail.html, messageId: mail.messageId, fromName, headers: NOTIFICATION_HEADERS })
+  sending.catch((err) => console.error('[notify] could not send:', (err as Error).message))
+}
+
 /** Tell a teammate that their emailed reply was not sent to the customer. */
 export function notifyReplyRejected(mailbox: MailboxRow, to: string, conversationId: number, reason: string) {
-  if (config.mailDisabled || !mailbox.smtp_host) return
-  sendMail(mailbox, {
-    to: [to],
+  if (config.mailDisabled || !canNotify(mailbox)) return
+  sendToTeammate(mailbox, {
+    to,
     subject: `Your reply was not sent (conversation #${conversationId})`,
     html: wrapEmailHtml(`<p>${escapeHtml(reason)}</p><p>Nothing was sent to the customer. <a href="${config.appUrl}/c/${conversationId}">Open conversation #${conversationId}</a> to reply in ${escapeHtml(brandName())}.</p>`),
-    fromName: `${mailbox.name} (${brandName()})`,
-    headers: { 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' },
-  }).catch((err) => console.error('[notify] could not send:', (err as Error).message))
+  })
 }
 
 /** Inline images point at this server and need a login, so they cannot show inside an email. */
@@ -173,17 +193,15 @@ function send(conversationId: number, userId: number, flag: 'notify_assigned' | 
     return
   }
   const mailbox = get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', conversation.mailboxId)
-  if (!mailbox?.smtp_host || user.email.toLowerCase() === mailbox.email.toLowerCase()) return
+  if (!mailbox || !canNotify(mailbox) || user.email.toLowerCase() === mailbox.email.toLowerCase()) return
   const { html: leadHtml } = lead({ customer: conversation.customer.name || conversation.customer.email })
-  sendMail(mailbox, {
-    to: [user.email],
+  sendToTeammate(mailbox, {
+    to: user.email,
     // The same subject for every notification of a conversation, so mail clients group them.
     subject: `[${mailbox.name} #${conversation.id}] ${conversation.subject}`,
-    html: renderNotification({ appUrl: config.appUrl, viewerId: userId, leadHtml, conversation, replyByEmail: !!mailbox.imap_enabled && !!mailbox.imap_host }),
+    html: renderNotification({ appUrl: config.appUrl, viewerId: userId, leadHtml, conversation, replyByEmail: repliesComeBack(mailbox) }),
     messageId: notificationMessageId(conversation.id, userId, mailbox.email),
-    fromName: `${mailbox.name} (${brandName()})`,
-    headers: { 'X-Ansa-Notification': '1', 'Auto-Submitted': 'auto-generated' },
-  }).catch((err) => console.error('[notify] could not send:', (err as Error).message))
+  })
 }
 
 const strong = (text: string) => `<strong style="color:#5c6168;">${escapeHtml(text)}</strong>`

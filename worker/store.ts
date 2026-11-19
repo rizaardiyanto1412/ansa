@@ -10,14 +10,17 @@ import { readConfig } from '../server/config.ts'
 import { get } from '../server/db.ts'
 import type { Driver } from '../server/db.ts'
 import type { BlobStore } from '../server/blobs.ts'
-import { createTenant, runInTenant, type Tenant } from '../server/tenant.ts'
+import { activeTenant, createTenant, runInTenant, type Tenant } from '../server/tenant.ts'
 import { createApp, prepareData } from '../server/app.ts'
 import { HibernatingEvents } from './live.ts'
 import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
-import type { ControlPlane, PlanState, SmtpCredential } from '../server/hosted.ts'
+import { rpcError, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
-import { pollAllMailboxes } from '../server/mail/imap.ts'
+import { checkDueDomains, ingestInbound, nextDomainCheckAt, noteBounce, setSendingDomain } from '../server/services/managed.ts'
+import { exportArchive } from '../server/services/export.ts'
+import { pollAllMailboxes, stopAllMailboxes } from '../server/mail/imap.ts'
+import { dispatchQueued, nextRetryAt } from '../server/mail/outbound.ts'
 import { deliverResetOutbox, nextResetAt } from '../server/services/accounts.ts'
 import { dispatchScheduled, nextScheduledAt, wakeSnoozed } from '../server/services/conversations.ts'
 import { importStatus, importStep } from '../server/services/import-helpscout.ts'
@@ -45,6 +48,16 @@ export function readWorkspaceId(ctx: DurableObjectState, env: StoreEnv) {
   const parsed = workspaceIdSchema.safeParse(stored ?? 'main')
   if (!parsed.success) throw Object.assign(new Error('Invalid workspace ID.'), { name: 'Invalid' })
   return parsed.data
+}
+
+// Several workspaces share an isolate and its console, so each line names the workspace that wrote it.
+for (const level of ['log', 'info', 'warn', 'error'] as const) {
+  const write = console[level].bind(console)
+  console[level] = (...args: unknown[]) => {
+    const workspaceId = activeTenant()?.workspaceId
+    if (workspaceId) write(`[ws ${workspaceId}]`, ...args)
+    else write(...args)
+  }
 }
 
 const CHUNK = 1024 * 1024
@@ -109,6 +122,39 @@ function r2Blobs(bucket: R2Bucket, workspaceId: () => string): BlobStore {
   }
 }
 
+// R2 wants every part but the last to have the same size.
+const EXPORT_PART = 8 * 1024 * 1024
+const EXPORTS_KEPT_FOR = 7 * 86_400_000
+
+async function* inParts(chunks: AsyncIterable<Uint8Array>, size: number): AsyncGenerator<Uint8Array> {
+  let part = new Uint8Array(size)
+  let filled = 0
+  for await (const chunk of chunks) {
+    for (let at = 0; at < chunk.length; ) {
+      const take = Math.min(size - filled, chunk.length - at)
+      part.set(chunk.subarray(at, at + take), filled)
+      filled += take
+      at += take
+      if (filled === size) {
+        yield part
+        part = new Uint8Array(size)
+        filled = 0
+      }
+    }
+  }
+  yield part.subarray(0, filled)
+}
+
+async function removePrefix(bucket: R2Bucket, prefix: string, olderThan = Infinity) {
+  let cursor: string | undefined
+  do {
+    const page = await bucket.list({ prefix, cursor, limit: 1000 })
+    const keys = page.objects.filter((object) => object.uploaded.getTime() < olderThan).map((object) => object.key)
+    if (keys.length) await bucket.delete(keys)
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+}
+
 function storedSecret(ctx: DurableObjectState): string {
   const { kv } = ctx.storage
   let secret = kv.get<string>('secret')
@@ -134,6 +180,9 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     config.imapPollOnly = true
 
     this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => readWorkspaceId(ctx, env)) : sqliteBlobs(ctx) })
+    this.tenant.control = env.CONTROL ?? null
+    this.tenant.workspaceId = config.hosted ? (ctx.storage.kv.get<string>('workspaceId') ?? null) : null
+    this.tenant.deadlineChanged = () => void this.inTenant(() => this.scheduleAlarm()).catch((err) => console.error('[alarm]', err))
     this.live = new HibernatingEvents(ctx)
     this.tenant.liveEvents = {
       kind: 'websocket',
@@ -145,7 +194,29 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       subscribe((event) => this.live.broadcast(event))
       return createApp()
     })
-    this.tenant.control = env.CONTROL ?? null
+    this.inTenant(() => this.reportHealth())
+  }
+
+  private hostedWorkspaceId(): string {
+    const workspaceId = this.tenant.config.hosted ? this.ctx.storage.kv.get<string>('workspaceId') : undefined
+    if (!workspaceId) throw rpcError('NotProvisioned', 'This workspace is not provisioned yet.')
+    return workspaceId
+  }
+
+  // The control plane lists every workspace's versions and counts, so it hears when one of them changes.
+  private reportHealth() {
+    const control = this.env.CONTROL
+    const workspaceId = this.tenant.workspaceId
+    if (!control || !workspaceId) return
+    const report: Health = health()
+    const stamp = JSON.stringify(report)
+    if (this.ctx.storage.kv.get<string>('healthReported') === stamp) return
+    this.ctx.waitUntil(
+      control.reportHealth(workspaceId, report).then(
+        () => this.ctx.storage.kv.put('healthReported', stamp),
+        (err) => this.inTenant(() => console.error('[health] report failed:', (err as Error).message)),
+      ),
+    )
   }
 
   protected inTenant<T>(fn: () => T): T {
@@ -156,6 +227,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     return this.inTenant(() => {
       const result = provision(input)
       this.ctx.storage.kv.put('workspaceId', input.workspaceId)
+      this.reportHealth()
       return result
     })
   }
@@ -168,8 +240,79 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     this.inTenant(() => setSmtp(smtp))
   }
 
-  async health(): Promise<{ schemaVersion: number; coreVersion: string; mailboxes: number; users: number }> {
+  async health(): Promise<Health> {
     return this.inTenant(health)
+  }
+
+  async ingestInbound(input: { mailboxId: number; raw?: ArrayBuffer; r2Key?: string }): Promise<'accepted' | 'duplicate'> {
+    return this.inTenant(async () => {
+      this.hostedWorkspaceId()
+      const result = await ingestInbound(input.mailboxId, await this.inboundBytes(input))
+      await this.scheduleAlarm()
+      return result
+    })
+  }
+
+  private async inboundBytes(input: { raw?: ArrayBuffer; r2Key?: string }): Promise<Uint8Array> {
+    if (input.raw instanceof ArrayBuffer) return new Uint8Array(input.raw)
+    if (typeof input.r2Key !== 'string' || !this.env.ATTACHMENTS) throw rpcError('Invalid', 'Pass the message as raw bytes or as an R2 key.')
+    // The bucket also holds other workspaces' files. A key may name queued inbound mail or this workspace's own objects, nothing else.
+    if (!input.r2Key.startsWith('inbound/') && !input.r2Key.startsWith(`ws/${this.hostedWorkspaceId()}/`)) throw rpcError('Invalid', 'That R2 key is not inbound mail for this workspace.')
+    const object = await this.env.ATTACHMENTS.get(input.r2Key)
+    if (!object) throw rpcError('NotFound', 'No message is stored under that R2 key.')
+    return new Uint8Array(await object.arrayBuffer())
+  }
+
+  async setSendingDomain(input: Parameters<typeof setSendingDomain>[0]): Promise<void> {
+    this.inTenant(() => {
+      this.hostedWorkspaceId()
+      setSendingDomain(input)
+    })
+  }
+
+  async noteBounce(input: Parameters<typeof noteBounce>[0]): Promise<void> {
+    this.inTenant(() => {
+      this.hostedWorkspaceId()
+      noteBounce(input)
+    })
+  }
+
+  async exportWorkspace(): Promise<{ r2Key: string }> {
+    return this.inTenant(async () => {
+      const bucket = this.env.ATTACHMENTS
+      if (!bucket) throw rpcError('Invalid', 'Exports need the ATTACHMENTS bucket.')
+      const prefix = `ws/${this.hostedWorkspaceId()}/exports/`
+      await removePrefix(bucket, prefix, Date.now() - EXPORTS_KEPT_FOR)
+      const r2Key = `${prefix}${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(8).toString('hex')}.zip`
+      const upload = await bucket.createMultipartUpload(r2Key, { httpMetadata: { contentType: 'application/zip' } })
+      try {
+        const parts: R2UploadedPart[] = []
+        for await (const part of inParts(exportArchive(), EXPORT_PART)) parts.push(await upload.uploadPart(parts.length + 1, part))
+        await upload.complete(parts)
+      } catch (err) {
+        await upload.abort().catch(() => {})
+        throw err
+      }
+      return { r2Key }
+    })
+  }
+
+  async deleteWorkspace(): Promise<void> {
+    if (!this.tenant.config.hosted) throw rpcError('Invalid', 'This install is not in hosted mode.')
+    const workspaceId = this.ctx.storage.kv.get<string>('workspaceId')
+    for (const socket of this.ctx.getWebSockets()) socket.close(1001, 'This workspace was deleted.')
+    await this.inTenant(stopAllMailboxes)
+    if (workspaceId && this.env.ATTACHMENTS) await removePrefix(this.env.ATTACHMENTS, `ws/${readWorkspaceId(this.ctx, this.env)}/`)
+    await this.ctx.storage.deleteAlarm()
+    await this.ctx.storage.deleteAll()
+    // The object lives on in memory. Give it the empty state a fresh one starts with, under a new secret.
+    const { tenant } = this
+    tenant.config.secret = storedSecret(this.ctx)
+    tenant.workspaceId = null
+    tenant.listeners.clear()
+    tenant.presence.clear()
+    tenant.autoReplyLog.clear()
+    this.inTenant(prepareData)
   }
 
   /** Without APP_URL, links in emails use the address people actually sign in on. */
@@ -192,6 +335,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       this.learnUrl(request)
       const response = await this.app.fetch(request)
       await this.scheduleAlarm()
+      if (request.method !== 'GET' && request.method !== 'HEAD') this.reportHealth()
       const out = response.status === 101 ? response : new Response(response.body, response)
       out.headers.set(CODE_HEADER, String(mine))
       return out
@@ -235,7 +379,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   protected async scheduleAlarm() {
     const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
-    const deadlines = [nextScheduledAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const deadlines = [nextScheduledAt(), nextRetryAt(), nextDomainCheckAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
     const current = await this.ctx.storage.getAlarm()
     if (deadlines.length === 0) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -261,6 +405,8 @@ export class AnsaStore extends DurableObject<StoreEnv> {
           }
         }],
         ['dispatchScheduled', () => dispatchScheduled()],
+        ['dispatchQueued', () => dispatchQueued()],
+        ['checkDueDomains', () => checkDueDomains()],
         ['pollAllMailboxes', async () => {
           const pollAt = this.pollDeadline()
           if (pollAt !== null && pollAt <= Date.now()) {

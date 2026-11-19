@@ -75,8 +75,14 @@ async function teammateReply(mailbox: MailboxRow, mail: ParsedMail, ref: { conve
 export async function ingestRaw(mailboxId: number, source: Buffer | string, opts: { historical?: boolean } = {}): Promise<IngestResult | null> {
   const mailbox = get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', mailboxId)
   if (!mailbox) return null
-  // Keep cid: links so inline images are stored as files, not as data URIs inside the message.
-  const mail = await simpleParser(source, { skipImageLinks: true })
+  return ingestParsed(mailbox, await parseRaw(source), opts)
+}
+
+// Keep cid: links so inline images are stored as files, not as data URIs inside the message.
+export const parseRaw = (source: Buffer | string) => simpleParser(source, { skipImageLinks: true })
+
+export async function ingestParsed(mailbox: MailboxRow, mail: ParsedMail, opts: { historical?: boolean } = {}): Promise<IngestResult | null> {
+  const mailboxId = mailbox.id
   // Contact forms send from their own address and put the person in Reply-To, so prefer that.
   const fromHeader = mail.from?.value[0]
   const replyTo = mail.replyTo?.value[0]

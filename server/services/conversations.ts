@@ -5,6 +5,7 @@ import { emitAppEvent, type AppEvent } from '../hooks.ts'
 import { cleanHtml, htmlToText, previewOf } from '../mail/html.ts'
 import { deliverThread, newMessageId, queueDelivery, type MailboxRow } from '../mail/outbound.ts'
 import { config } from '../config.ts'
+import { assertCanSend } from '../hosted.ts'
 import { AppError, findOrCreateCustomer, getCustomer, isEmail, normEmail } from './customers.ts'
 import { notifyAssigned, notifyCustomerReply, notifyMentioned } from './notify.ts'
 import { brandName, getWorkspace } from './workspace.ts'
@@ -23,8 +24,13 @@ export interface Actor {
   access?: TokenAccess
 }
 
-function assertCanEmail(actor: Actor) {
+function assertMayEmail(actor: Actor) {
   if (actor.access === 'internal') throw new AppError("This token is internal only. It can't email customers.", 403)
+}
+
+function assertCanEmail(actor: Actor) {
+  assertMayEmail(actor)
+  assertCanSend()
 }
 
 const OPEN = `c.status IN ('active', 'waiting', 'pending')`
@@ -217,7 +223,8 @@ function serializeThread(t: any, attachments: any[]) {
     to: parseJson<string[]>(t.to_addrs, []),
     cc: parseJson<string[]>(t.cc, []),
     bcc: parseJson<string[]>(t.bcc, []),
-    state: t.state as 'sent' | 'sending' | 'failed' | 'scheduled',
+    state: t.state as 'sent' | 'sending' | 'queued' | 'failed' | 'scheduled',
+    retryAt: (t.retry_at as number | null) ?? null,
     /** When a scheduled reply goes out. Null once it is sent, or while it is held back. */
     sendAt: (t.send_at as number | null) ?? null,
     error: t.error as string | null,
@@ -446,7 +453,8 @@ export function teammateReplyAfter(conversationId: number, afterThreadId: number
 }
 
 export function addReply(conversationId: number, input: ReplyInput, actor: Actor): number {
-  assertCanEmail(actor)
+  if (input.skipDelivery) assertMayEmail(actor)
+  else assertCanEmail(actor)
   const bodyHtml = cleanHtml(input.bodyHtml)
   const text = htmlToText(bodyHtml)
   if (!text.trim() && !input.attachmentIds?.length) throw new AppError('Write a reply before sending.')
@@ -923,7 +931,7 @@ export function retryDelivery(threadId: number, actor: Actor) {
   assertCanEmail(actor)
   const t = get<any>(`SELECT id, conversation_id FROM threads WHERE id = ? AND type = 'reply' AND state = 'failed'`, threadId)
   if (!t) throw new AppError('That message is not waiting to be re-sent.')
-  run(`UPDATE threads SET state = 'sending', error = NULL WHERE id = ?`, threadId)
+  run(`UPDATE threads SET state = 'sending', error = NULL, attempts = 0, retry_at = NULL WHERE id = ?`, threadId)
   queueDelivery(threadId)
 }
 

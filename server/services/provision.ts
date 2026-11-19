@@ -5,8 +5,9 @@ import { config } from '../config.ts'
 import { encrypt } from '../crypto.ts'
 import { USER_COLORS } from '../auth.ts'
 import { publish } from '../events.ts'
-import { hostedState, PlanStateSchema, rpcError, saveHostedState, SmtpCredentialSchema, type HostedState, type PlanState, type SmtpCredential } from '../hosted.ts'
+import { hostedState, parseRpc as parse, PlanStateSchema, rpcError, saveHostedState, SmtpCredentialSchema, type Health, type HostedState, type PlanState, type SmtpCredential } from '../hosted.ts'
 import { currentTenant } from '../tenant.ts'
+import { releaseThrottled } from '../mail/outbound.ts'
 import { issueLink } from './accounts.ts'
 import { isEmail, normEmail } from './customers.ts'
 
@@ -41,12 +42,6 @@ const ProvisionSchema = z.object({
 })
 export type ProvisionInput = z.input<typeof ProvisionSchema>
 
-function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
-  const result = schema.safeParse(input)
-  if (!result.success) throw rpcError('Invalid', z.prettifyError(result.error))
-  return result.data
-}
-
 const sealSmtp = ({ pass, ...rest }: SmtpCredential): HostedState['smtp'] => ({ ...rest, passEnc: encrypt(pass) })
 
 function provisioned(): HostedState {
@@ -68,7 +63,9 @@ export function provision(input: ProvisionInput): { signInUrl: string } {
     const adminUserId = run(`INSERT INTO users (name, email, password_hash, role, color, created_at) VALUES (?, ?, '', 'admin', ?, ?)`, data.admin.name, data.admin.email, USER_COLORS[0], now()).id
     saveHostedState({ workspaceId: data.workspaceId, workspaceName: data.workspaceName, appUrl: data.appUrl, adminUserId, smtp: sealSmtp(data.smtp), planState: data.planState })
   })
-  currentTenant().config.appUrl = data.appUrl
+  const tenant = currentTenant()
+  tenant.config.appUrl = data.appUrl
+  tenant.workspaceId = data.workspaceId
   return { signInUrl: issueLink(provisioned().adminUserId, 'sign_in') }
 }
 
@@ -76,6 +73,8 @@ export function setPlan(input: PlanState): void {
   const state = provisioned()
   saveHostedState({ ...state, planState: parse(PlanStateSchema, input) })
   publish({ type: 'refresh', scope: 'workspace' })
+  releaseThrottled()
+  currentTenant().deadlineChanged()
 }
 
 export function setSmtp(input: SmtpCredential): void {
@@ -83,7 +82,7 @@ export function setSmtp(input: SmtpCredential): void {
   saveHostedState({ ...state, smtp: sealSmtp(parse(SmtpCredentialSchema, input)) })
 }
 
-export function health() {
+export function health(): Health {
   const count = (sql: string) => get<{ n: number }>(sql)!.n
   return {
     schemaVersion: schemaVersion(),

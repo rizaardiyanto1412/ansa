@@ -21,6 +21,29 @@ export interface PlanState {
   mailboxLimit: number | null
   readOnly: boolean
   hourlySendLimit: number
+  trialEndsAt?: number | null
+}
+
+export interface DnsRecord {
+  type: 'CNAME' | 'TXT' | 'MX'
+  host: string
+  value: string
+}
+
+export interface ManagedMailbox {
+  inboundAddress: string
+  receiving: boolean
+  forwardingConfirmation: { code: string | null; link: string | null; at: number } | null
+  sendingDomain: string
+  sendingStatus: 'none' | 'pending' | 'verified' | 'failed'
+  sendingRecords: DnsRecord[]
+  sendingCheckedAt: number | null
+}
+
+export interface Billing {
+  plan: PlanState
+  mailboxes: number
+  links: { checkout: Record<string, string>; portal: string | null }
 }
 
 export interface FolderCounts {
@@ -34,10 +57,12 @@ export interface FolderCounts {
 
 export interface Mailbox {
   id: number
+  kind: 'imap' | 'managed'
   name: string
   email: string
   fromName: string
   color: string
+  receiving: boolean
   imapEnabled: boolean
   smtpConfigured: boolean
   syncStatus: 'idle' | 'connecting' | 'ok' | 'error'
@@ -60,6 +85,7 @@ export interface Mailbox {
   importExisting?: boolean
   autoReplyEnabled?: boolean
   autoReplyBody?: string
+  managed?: ManagedMailbox | null
 }
 
 export interface Tag {
@@ -132,7 +158,8 @@ export interface Thread {
   to: string[]
   cc: string[]
   bcc: string[]
-  state: 'sent' | 'sending' | 'failed' | 'scheduled'
+  state: 'sent' | 'sending' | 'queued' | 'failed' | 'scheduled'
+  retryAt: number | null
   sendAt: number | null
   error: string | null
   event: Record<string, any> | null
