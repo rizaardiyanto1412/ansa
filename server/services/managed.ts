@@ -1,8 +1,9 @@
 import crypto from 'node:crypto'
 import type { ParsedMail } from 'mailparser'
 import { z } from 'zod'
-import { get, run, tx, now, parseJson } from '../db.ts'
+import { all, get, run, tx, now, parseJson } from '../db.ts'
 import { publish } from '../events.ts'
+import { blobs } from '../blobs.ts'
 import { BillingLinksSchema, controlPlane, DnsRecordSchema, DomainResultSchema, parseRpc, rpcError, type BillingLinks, type DnsRecord, type DomainResult, type PlanState } from '../hosted.ts'
 import { ingestParsed, parseRaw } from '../mail/ingest.ts'
 import { domainOf, type MailboxRow } from '../mail/outbound.ts'
@@ -47,7 +48,8 @@ export function gmailForwardingConfirmation(mail: Pick<ParsedMail, 'from' | 'sub
   return code || link ? { code, link, at: now() } : null
 }
 
-const INGESTS_KEPT_FOR = 60 * 86_400_000
+const INGESTS_KEPT_FOR = 180 * 86_400_000
+const STARTED_INGESTS_KEPT_FOR = 2 * 86_400_000
 
 interface InboundIngest {
   key: string
@@ -57,6 +59,33 @@ interface InboundIngest {
 
 const sha256 = (data: string | Uint8Array) => crypto.createHash('sha256').update(data).digest('hex')
 
+async function discardIngestFiles(key: string): Promise<void> {
+  const unused = all<{ storage_key: string }>(
+    `SELECT storage_key FROM inbound_ingest_files WHERE ingest_key = ?
+     AND NOT EXISTS (SELECT 1 FROM attachments WHERE attachments.storage_key = inbound_ingest_files.storage_key)`, key,
+  )
+  if (unused.length) await blobs.remove(unused.map((file) => file.storage_key))
+  run('DELETE FROM inbound_ingest_files WHERE ingest_key = ?', key)
+}
+
+export function nextIngestCleanupAt(): number | null {
+  return get<{ at: number | null }>(
+    `SELECT MIN(created_at + CASE state WHEN 'started' THEN ? ELSE ? END) AS at FROM inbound_ingests`,
+    STARTED_INGESTS_KEPT_FOR, INGESTS_KEPT_FOR,
+  )?.at ?? null
+}
+
+export async function pruneInboundIngests(): Promise<void> {
+  const expired = all<InboundIngest>(
+    `SELECT * FROM inbound_ingests WHERE (state = 'started' AND created_at <= ?) OR (state = 'complete' AND created_at <= ?)`,
+    now() - STARTED_INGESTS_KEPT_FOR, now() - INGESTS_KEPT_FOR,
+  )
+  for (const ingest of expired) {
+    await discardIngestFiles(ingest.key)
+    run('DELETE FROM inbound_ingests WHERE key = ? AND state = ? AND created_at = ?', ingest.key, ingest.state, ingest.created_at)
+  }
+}
+
 export async function ingestInbound(mailboxId: number, raw: Uint8Array): Promise<'accepted' | 'duplicate'> {
   const mailbox = get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', parseRpc(mailboxIdSchema, mailboxId))
   if (!mailbox) throw rpcError('NotFound', 'That mailbox does not exist.')
@@ -65,9 +94,17 @@ export async function ingestInbound(mailboxId: number, raw: Uint8Array): Promise
   const hash = sha256(source)
   const key = mail.messageId ? `id:${mail.messageId}` : `sha256:${hash}`
   const ingest = get<InboundIngest>('SELECT * FROM inbound_ingests WHERE key = ?', key)
-  if (ingest?.state === 'complete') return 'duplicate'
+  if (ingest?.state === 'complete') {
+    await discardIngestFiles(key)
+    return 'duplicate'
+  }
   const startedAt = ingest?.created_at ?? now()
   if (!ingest) run(`INSERT INTO inbound_ingests (key, state, created_at) VALUES (?, 'started', ?)`, key, startedAt)
+
+  const fileKeys = mail.attachments.map((_, index) => attachmentKey(sha256(`${hash}:${index}`).slice(0, 32), startedAt))
+  tx(() => {
+    for (const fileKey of fileKeys) run('INSERT OR IGNORE INTO inbound_ingest_files (ingest_key, storage_key) VALUES (?, ?)', key, fileKey)
+  })
 
   const confirmation = gmailForwardingConfirmation(mail)
   const complete = () => {
@@ -79,12 +116,13 @@ export async function ingestInbound(mailboxId: number, raw: Uint8Array): Promise
   let claimed: boolean | null = null
   const filed = await ingestParsed(mailbox, mail, {
     delivery: {
-      fileKey: (index) => attachmentKey(sha256(`${hash}:${index}`).slice(0, 32), startedAt),
+      fileKey: (index) => fileKeys[index],
       claim: () => (claimed = complete()),
     },
   })
-  if (claimed === false || (!filed && !tx(complete))) return 'duplicate'
-  run("DELETE FROM inbound_ingests WHERE state = 'complete' AND created_at < ?", now() - INGESTS_KEPT_FOR)
+  const duplicate = claimed === false || (!filed && !tx(complete))
+  await discardIngestFiles(key)
+  if (duplicate) return 'duplicate'
   if (confirmation || !mailbox.first_inbound_at) publish({ type: 'mailbox', id: mailbox.id })
   return 'accepted'
 }
