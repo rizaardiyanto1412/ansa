@@ -1,5 +1,5 @@
 /**
- * One install as a Durable Object: its built-in SQLite database holds the data and the attachments,
+ * One install as a Durable Object: SQLite holds the data, and an optional R2 bucket holds attachments,
  * and its alarm checks the mailboxes for new email. Several objects can share an isolate, so each one
  * owns a tenant and every entry point runs inside it.
  */
@@ -21,6 +21,7 @@ export interface StoreEnv {
   CF_VERSION_METADATA?: { id: string; timestamp: string }
   /** "1" when a control plane runs many workspaces. Self-hosted installs never set it. */
   ANSA_HOSTED?: string
+  ATTACHMENTS?: R2Bucket
   [name: string]: unknown
 }
 
@@ -49,14 +50,14 @@ function sqliteBlobs(ctx: DurableObjectState): BlobStore {
   const { sql } = ctx.storage
   sql.exec('CREATE TABLE IF NOT EXISTS _blobs (key TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (key, seq)) WITHOUT ROWID')
   return {
-    put: (key, data) =>
+    put: async (key, data) =>
       ctx.storage.transactionSync(() => {
         sql.exec('DELETE FROM _blobs WHERE key = ?', key)
         for (let seq = 0, at = 0; at < data.byteLength || seq === 0; seq++, at += CHUNK) {
           sql.exec('INSERT INTO _blobs (key, seq, data) VALUES (?, ?, ?)', key, seq, toBuffer(data.subarray(at, at + CHUNK)))
         }
       }),
-    get: (key) => {
+    get: async (key) => {
       const parts = sql.exec('SELECT data FROM _blobs WHERE key = ? ORDER BY seq', key).toArray().map((row) => new Uint8Array(row.data as ArrayBuffer))
       if (parts.length === 0) return null
       const out = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0))
@@ -65,9 +66,21 @@ function sqliteBlobs(ctx: DurableObjectState): BlobStore {
         out.set(part, at)
         at += part.byteLength
       }
-      return out
+      return { body: out, size: out.byteLength }
     },
-    remove: (key) => void sql.exec('DELETE FROM _blobs WHERE key = ?', key),
+    remove: async (key) => void sql.exec('DELETE FROM _blobs WHERE key = ?', key),
+  }
+}
+
+function r2Blobs(bucket: R2Bucket, workspaceId: () => string): BlobStore {
+  const objectKey = (key: string) => `ws/${workspaceId()}/${key}`
+  return {
+    put: async (key, data) => { await bucket.put(objectKey(key), data) },
+    get: async (key) => {
+      const object = await bucket.get(objectKey(key))
+      return object ? { body: object.body, size: object.size } : null
+    },
+    remove: async (key) => { await bucket.delete(objectKey(key)) },
   }
 }
 
@@ -96,7 +109,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     if (!config.appUrlFixed) config.appUrl = ctx.storage.kv.get<string>('appUrl') ?? config.appUrl
     config.imapPollOnly = true
 
-    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: sqliteBlobs(ctx) })
+    this.tenant = createTenant({ config, db: sqliteDriver(ctx), blobs: env.ATTACHMENTS ? r2Blobs(env.ATTACHMENTS, () => ctx.storage.kv.get<string>('workspaceId') ?? 'main') : sqliteBlobs(ctx) })
     this.app = this.inTenant(() => {
       prepareData()
       startTimers()

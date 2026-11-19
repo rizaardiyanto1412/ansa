@@ -1,10 +1,14 @@
 import { currentTenant } from './tenant.ts'
 
-/** Where attachment bytes live. Files on a server, database rows on Cloudflare. */
+export interface StoredBlob {
+  body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>
+  size: number
+}
+
 export interface BlobStore {
-  put(key: string, data: Uint8Array): void
-  get(key: string): Uint8Array | null
-  remove(key: string): void
+  put(key: string, data: Uint8Array): Promise<void>
+  get(key: string): Promise<StoredBlob | null>
+  remove(key: string): Promise<void>
 }
 
 export const blobs: BlobStore = {

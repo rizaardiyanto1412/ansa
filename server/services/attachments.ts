@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { get, run, now } from '../db.ts'
-import { blobs } from '../blobs.ts'
+import { blobs, type StoredBlob } from '../blobs.ts'
 
 export interface StoredAttachment {
   id: number
@@ -12,14 +12,14 @@ export interface StoredAttachment {
 
 const safeName = (name: string) => (name || 'attachment').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 200) || 'attachment'
 
-export function storeAttachment(
+export async function storeAttachment(
   data: Uint8Array,
   meta: { filename: string; mime?: string; threadId?: number | null; contentId?: string | null; inline?: boolean; uploadedBy?: number | null },
-): StoredAttachment {
+): Promise<StoredAttachment> {
   const date = new Date()
   const dir = `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, '0')}`
   const key = `${dir}/${crypto.randomBytes(16).toString('hex')}`
-  blobs.put(key, data)
+  await blobs.put(key, data)
   const filename = safeName(meta.filename)
   const mime = meta.mime || 'application/octet-stream'
   const { id } = run(
@@ -37,14 +37,14 @@ export function storeAttachment(
   return { id, filename, mime, size: data.byteLength, url: `/api/attachments/${id}/${encodeURIComponent(filename)}` }
 }
 
-export function attachmentFile(id: number): { data: Uint8Array; filename: string; mime: string; size: number } | null {
-  const row = get<any>('SELECT * FROM attachments WHERE id = ?', id)
+export async function attachmentFile(id: number): Promise<(StoredBlob & { filename: string; mime: string }) | null> {
+  const row = get<{ storage_key: string; filename: string; mime: string }>('SELECT storage_key, filename, mime FROM attachments WHERE id = ?', id)
   if (!row) return null
-  const data = blobs.get(row.storage_key)
+  const data = await blobs.get(row.storage_key)
   if (!data) return null
-  return { data, filename: row.filename, mime: row.mime, size: data.byteLength }
+  return { ...data, filename: row.filename, mime: row.mime }
 }
 
-export function removeFiles(keys: string[]) {
-  for (const key of keys) blobs.remove(key)
+export async function removeFiles(keys: string[]) {
+  for (const key of keys) await blobs.remove(key)
 }

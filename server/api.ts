@@ -102,11 +102,11 @@ const hasUsers = () => !!get('SELECT 1 FROM users LIMIT 1')
 api.get('/bootstrap', (c) => c.json({ setupRequired: !hasUsers(), user: userFromSession(c), appUrl: config.appUrl, version: '1.0.0', workspace: publicWorkspace() }))
 
 // The workspace logo. Public, because the sign-in page shows it.
-api.get('/brand/logo', (c) => {
+api.get('/brand/logo', async (c) => {
   const logo = getWorkspace().logo
-  const data = logo ? blobs.get(logo.key) : null
+  const data = logo ? await blobs.get(logo.key) : null
   if (!logo || !data) throw new AppError('No logo.', 404)
-  return new Response(data as Uint8Array<ArrayBuffer>, {
+  return new Response(data.body, {
     headers: { 'Content-Type': logo.mime, 'Cache-Control': 'public, max-age=31536000, immutable', 'Content-Security-Policy': "default-src 'none'; sandbox", 'X-Content-Type-Options': 'nosniff' },
   })
 })
@@ -385,7 +385,7 @@ api.delete('/mailboxes/:id', requireAdmin, async (c) => {
     run('DELETE FROM search WHERE rowid IN (SELECT id FROM conversations WHERE mailbox_id = ?)', id)
     run('DELETE FROM mailboxes WHERE id = ?', id)
   })
-  removeFiles(files.map((f) => f.storage_key))
+  await removeFiles(files.map((f) => f.storage_key))
   void restartMailbox(id)
   return c.json({ ok: true })
 })
@@ -504,7 +504,7 @@ api.post('/conversations/bulk', async (c) => {
   const ids: number[] = Array.isArray(data.ids) ? data.ids.map(int).filter((n: number) => n > 0).slice(0, 200) : []
   const actor = actorOf(c)
   if (data.delete === true) {
-    for (const id of ids) removeFiles(deleteConversation(id, actor))
+    for (const id of ids) await removeFiles(deleteConversation(id, actor))
   } else {
     for (const id of ids) updateConversation(id, patchFrom(data.patch ?? {}), actor)
   }
@@ -536,8 +536,8 @@ api.patch('/conversations/:id', async (c) => {
   return c.json({ conversation: getConversation(id, { userId: c.get('user').id }) })
 })
 
-api.delete('/conversations/:id', (c) => {
-  removeFiles(deleteConversation(idParam(c.req.param('id')), actorOf(c)))
+api.delete('/conversations/:id', async (c) => {
+  await removeFiles(deleteConversation(idParam(c.req.param('id')), actorOf(c)))
   return c.json({ ok: true })
 })
 
@@ -628,18 +628,18 @@ api.post('/attachments', (c, next) => uploadLimit()(c, next), async (c) => {
   const file = form.file
   if (!(file instanceof File)) throw new AppError('Choose a file to upload.')
   if (file.size > config.maxAttachmentBytes) throw new AppError(`Files can be up to ${Math.round(config.maxAttachmentBytes / 1048576)} MB.`, 413)
-  const stored = storeAttachment(new Uint8Array(await file.arrayBuffer()), { filename: file.name, mime: file.type || undefined, uploadedBy: c.get('user').id })
+  const stored = await storeAttachment(new Uint8Array(await file.arrayBuffer()), { filename: file.name, mime: file.type || undefined, uploadedBy: c.get('user').id })
   return c.json({ attachment: stored }, 201)
 })
 
 const INLINE_SAFE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain'])
 
-api.get('/attachments/:id/:name?', (c) => {
-  const file = attachmentFile(idParam(c.req.param('id')))
+api.get('/attachments/:id/:name?', async (c) => {
+  const file = await attachmentFile(idParam(c.req.param('id')))
   if (!file) throw new AppError('File not found.', 404)
   const inline = INLINE_SAFE.has(file.mime) && c.req.query('download') === undefined
   const encoded = encodeURIComponent(file.filename).replace(/['()]/g, escape)
-  return new Response(file.data as Uint8Array<ArrayBuffer>, {
+  return new Response(file.body, {
     headers: {
       'Content-Type': inline ? file.mime : 'application/octet-stream',
       'Content-Length': String(file.size),
@@ -827,17 +827,17 @@ api.post('/workspace/logo', requireAdmin, bodyLimit({ maxSize: LOGO_MAX_BYTES + 
   if (file.size > LOGO_MAX_BYTES) throw new AppError('The logo can be up to 512 KB.', 413)
   const previous = getWorkspace().logo
   const key = `brand/logo-${Date.now().toString(36)}`
-  blobs.put(key, new Uint8Array(await file.arrayBuffer()))
+  await blobs.put(key, new Uint8Array(await file.arrayBuffer()))
   saveWorkspace({ logo: { key, mime: file.type, version: Date.now() } })
-  if (previous) blobs.remove(previous.key)
+  if (previous) await blobs.remove(previous.key)
   publish({ type: 'refresh', scope: 'workspace' })
   return c.json({ workspace: publicWorkspace() })
 })
 
-api.delete('/workspace/logo', requireAdmin, (c) => {
+api.delete('/workspace/logo', requireAdmin, async (c) => {
   const previous = getWorkspace().logo
   saveWorkspace({ logo: null })
-  if (previous) blobs.remove(previous.key)
+  if (previous) await blobs.remove(previous.key)
   publish({ type: 'refresh', scope: 'workspace' })
   return c.json({ workspace: publicWorkspace() })
 })

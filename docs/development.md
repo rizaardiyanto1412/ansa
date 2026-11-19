@@ -24,3 +24,7 @@ server/            Hono API, SQLite, mail, MCP. Runs on Node.js and on Workers
 worker/            Cloudflare: the Worker (index.ts) and its Durable Object (store.ts)
 web/               React + Vite + Tailwind single-page app
 ```
+
+Run `npx tsx scripts/check-attachments.ts` after `npm run build` to check attachment uploads and downloads on the built Node server and on `wrangler dev`, with and without a local R2 binding. The script uses temporary data, disables mail, and stops each server when its checks finish.
+
+Cloudflare installs use SQLite for attachment bytes unless the Worker has an `ATTACHMENTS` R2 bucket binding. With that binding, downloads stream from R2 and keys use `ws/<workspaceId>/<key>`, or `ws/main/<key>` on a self-hosted install. Adding a binding does not copy existing SQLite attachments into the bucket.
