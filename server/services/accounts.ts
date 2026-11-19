@@ -1,4 +1,4 @@
-import { get, run, tx, now } from '../db.ts'
+import { all, get, run, tx, now } from '../db.ts'
 import { config } from '../config.ts'
 import { hashPassword, randomToken, sha256 } from '../crypto.ts'
 import { allowAttempt, USER_COLORS } from '../auth.ts'
@@ -6,7 +6,6 @@ import { hostedState, type SystemEmail } from '../hosted.ts'
 import { escapeHtml } from '../mail/html.ts'
 import { wrapEmailHtml } from '../mail/outbound.ts'
 import { sendSystemEmail } from '../mail/system.ts'
-import { bindTenant } from '../tenant.ts'
 import { AppError, isEmail, normEmail } from './customers.ts'
 import { brandName } from './workspace.ts'
 
@@ -142,17 +141,38 @@ export function cancelInvite(userId: number) {
   if (run(`DELETE FROM users WHERE id = ? AND password_hash = ''`, userId).changes !== 1) throw new AppError('That invite is no longer waiting.', 409)
 }
 
-function sendResetLink(email: string) {
-  const allowed = allowAttempt(`reset:to:${email}`, 3, HOUR)
-  const user = get<{ id: number; email: string }>('SELECT id, email FROM users WHERE email = ? AND disabled = 0', email)
-  if (!user || !allowed) return
-  return sendSystemEmail(resetEmail(user.email, issueLink(user.id, 'reset')))
-}
+const RESET_TRIES = 5
+const RESET_LEASE = 5 * 60_000
+const resetRetryDelay = (tries: number) => Math.min(HOUR, 30_000 * 4 ** (tries - 1))
 
-// The answer leaves before Ansa looks the address up, so its timing cannot tell whether a teammate has it.
+// The same work for every address: the lookup happens later, when the outbox is delivered.
 export function requestPasswordReset(emailRaw: unknown) {
   if (!isEmail(emailRaw)) return
   const email = normEmail(emailRaw)
-  const job = bindTenant(async () => sendResetLink(email))
-  setTimeout(() => void job().catch((err) => console.error('[accounts] could not send a reset link:', (err as Error).message)), 0)
+  if (!allowAttempt(`reset:to:${email}`, 3, HOUR)) return
+  const ts = now()
+  run('INSERT INTO reset_outbox (email, next_at, created_at) VALUES (?, ?, ?) ON CONFLICT(email) DO NOTHING', email, ts, ts)
+}
+
+export const nextResetAt = () => get<{ at: number | null }>('SELECT MIN(next_at) AS at FROM reset_outbox')?.at ?? null
+
+async function sendResetLink(email: string) {
+  const user = get<{ id: number; email: string }>('SELECT id, email FROM users WHERE email = ? AND disabled = 0', email)
+  if (user) await sendSystemEmail(resetEmail(user.email, issueLink(user.id, 'reset')))
+}
+
+export async function deliverResetOutbox() {
+  const due = all<{ email: string; tries: number; next_at: number }>('SELECT email, tries, next_at FROM reset_outbox WHERE next_at <= ? ORDER BY next_at LIMIT 20', now())
+  for (const row of due) {
+    if (run('UPDATE reset_outbox SET next_at = ? WHERE email = ? AND next_at = ?', now() + RESET_LEASE, row.email, row.next_at).changes !== 1) continue
+    try {
+      await sendResetLink(row.email)
+      run('DELETE FROM reset_outbox WHERE email = ?', row.email)
+    } catch (err) {
+      const tries = row.tries + 1
+      console.error(`[accounts] could not send a reset link (try ${tries} of ${RESET_TRIES}):`, (err as Error).message)
+      if (tries >= RESET_TRIES) run('DELETE FROM reset_outbox WHERE email = ?', row.email)
+      else run('UPDATE reset_outbox SET tries = ?, next_at = ? WHERE email = ?', tries, now() + resetRetryDelay(tries), row.email)
+    }
+  }
 }

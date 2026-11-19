@@ -10,6 +10,7 @@ import { readConfig } from '../config.ts'
 import { decrypt, encrypt, sha256 } from '../crypto.ts'
 import { all, get, getSetting, run } from '../db.ts'
 import type { HostedState, SystemEmail } from '../hosted.ts'
+import { deliverResetOutbox } from '../services/accounts.ts'
 import { testApp } from '../services/apps.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../services/provision.ts'
 import { runInTenant } from '../tenant.ts'
@@ -62,7 +63,6 @@ const provisionInput = (over: Partial<ProvisionInput> = {}): ProvisionInput => (
 })
 
 const tokenOf = (text: string) => /\/link#([\w-]+)/.exec(text)?.[1] ?? assert.fail(`no one-time link in: ${text}`)
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 const rows = (sql: string) => all<Record<string, unknown>>(sql).map((row) => ({ ...row }))
 
 async function hostedWorkspace() {
@@ -325,6 +325,7 @@ test('a self-hosted install invites through its first mailbox, or says why it ca
     assert.equal(joined.status, 200, 'self-hosted passwords need 8 characters')
 
     assert.equal((await ws.call('POST', '/password/forgot', { body: { email: 'bo@self.test' } })).status, 200)
+    await ws.inside(deliverResetOutbox)
     for (let i = 0; i < 100 && catcher.inbox.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(catcher.inbox[1]?.subject, 'Reset your password for Ansa', 'the reset link left through SMTP too')
     assert.equal((await ws.call('POST', '/links/consume', { body: { token: tokenOf(catcher.inbox[1].text), password: 'new pass' } })).status, 200)
@@ -341,16 +342,22 @@ test('forgot password answers the same for everyone and emails a single-use link
   const ws = await hostedWorkspace()
   const known = await ws.call('POST', '/password/forgot', { body: { email: 'Ada@acme.test' } })
   const resetLinks = () => ws.inside(() => all(`SELECT id FROM one_time_links WHERE purpose = 'reset'`)).length
-  assert.deepEqual([resetLinks(), ws.sent.length], [0, 0], 'the answer leaves before Ansa looks the address up, so its timing tells nothing')
+  const outbox = () => ws.inside(() => rows('SELECT email, tries FROM reset_outbox ORDER BY email'))
   const unknown = await ws.call('POST', '/password/forgot', { body: { email: 'nobody@acme.test' } })
   const malformed = await ws.call('POST', '/password/forgot', { body: { email: 'nonsense' } })
-  await settle()
-  assert.equal(resetLinks(), 1, 'the link is made right after')
+  assert.deepEqual([resetLinks(), ws.sent.length], [0, 0], 'the answer leaves before Ansa looks the address up, so its timing tells nothing')
+  assert.deepEqual(outbox(), [{ email: 'ada@acme.test', tries: 0 }, { email: 'nobody@acme.test', tries: 0 }], 'known and unknown addresses are stored alike')
   assert.deepEqual([known.status, known.data], [200, { ok: true }])
   assert.deepEqual([unknown.status, unknown.data], [known.status, known.data], 'an unknown address gets the same answer')
   assert.deepEqual([malformed.status, malformed.data], [known.status, known.data], 'so does a malformed one')
+
+  await ws.inside(deliverResetOutbox)
+  assert.equal(resetLinks(), 1, 'delivery makes the link')
+  assert.deepEqual(outbox(), [], 'delivery empties the outbox')
   assert.equal(ws.sent.length, 1, 'only the teammate got an email')
   assert.deepEqual({ to: ws.sent[0].to, subject: ws.sent[0].subject }, { to: 'ada@acme.test', subject: 'Reset your password for Acme Support' })
+  await ws.inside(deliverResetOutbox)
+  assert.equal(ws.sent.length, 1, 'delivering again sends nothing more')
 
   const token = tokenOf(ws.sent[0].text)
   assert.deepEqual((await ws.call('POST', '/links/inspect', { body: { token } })).data.link, { purpose: 'reset', email: 'ada@acme.test', name: 'Ada', needsName: false, needsPassword: true })
@@ -363,13 +370,55 @@ test('forgot password answers the same for everyone and emails a single-use link
   assert.equal((await ws.call('POST', '/login', { body: { email: 'ada@acme.test', password: 'a brand new one' } })).status, 200, 'the new one works')
   assert.equal((await ws.call('POST', '/links/consume', { body: { token, password: 'yet another one' } })).status, 404, 'the link worked once')
 
-  for (let i = 0; i < 3; i++) assert.equal((await ws.call('POST', '/password/forgot', { body: { email: 'ada@acme.test' } })).status, 200, 'the answer stays the same over the limit')
-  await settle()
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await ws.call('POST', '/password/forgot', { body: { email: 'ada@acme.test' } })).status, 200, 'the answer stays the same over the limit')
+    await ws.inside(deliverResetOutbox)
+  }
   assert.equal(ws.sent.length, 3, 'at most three reset emails an hour go to one address')
 
   const elsewhere = { address: '198.51.100.9' }
   for (let i = 0; i < 10; i++) assert.equal((await ws.call('POST', '/password/forgot', { ...elsewhere, body: { email: `guess${i}@acme.test` } })).status, 200)
   assert.equal((await ws.call('POST', '/password/forgot', { ...elsewhere, body: { email: 'guess10@acme.test' } })).status, 429, 'one address may ask ten times an hour')
+})
+
+test('reset delivery retries with backoff and sends each request once', async () => {
+  const ws = await hostedWorkspace()
+  const control = ws.tenant.control!
+  let failures = 1
+  let calls = 0
+  ws.tenant.control = {
+    sendSystemEmail: async (workspaceId, mail) => {
+      calls++
+      if (failures-- > 0) throw new Error('control plane is down')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return control.sendSystemEmail(workspaceId, mail)
+    },
+  }
+  const pending = () => ws.inside(() => get<{ tries: number; next_at: number }>('SELECT tries, next_at FROM reset_outbox'))
+
+  assert.equal((await ws.call('POST', '/password/forgot', { body: { email: 'ada@acme.test' } })).status, 200)
+  const before = Date.now()
+  await ws.inside(deliverResetOutbox)
+  const waiting = pending()
+  assert.deepEqual([calls, ws.sent.length, waiting?.tries], [1, 0, 1], 'a failed send stays in the outbox')
+  assert.ok(waiting!.next_at >= before + 30_000, 'and waits before the next try')
+  await ws.inside(deliverResetOutbox)
+  assert.equal(calls, 1, 'nothing is tried before the backoff ends')
+
+  assert.equal((await ws.call('POST', '/password/forgot', { body: { email: 'ada@acme.test' } })).status, 200)
+  assert.deepEqual(pending(), waiting, 'a second request for a waiting address adds no second email')
+
+  ws.inside(() => run('UPDATE reset_outbox SET next_at = ?', Date.now() - 1))
+  await Promise.all([ws.inside(deliverResetOutbox), ws.inside(deliverResetOutbox)])
+  assert.deepEqual([calls, ws.sent.length, pending()], [2, 1, undefined], 'two deliveries at once send the email once')
+
+  for (let i = 0; i < 5; i++) {
+    failures = 1
+    if (i === 0) assert.equal((await ws.call('POST', '/password/forgot', { address: '198.51.100.40', body: { email: 'ada@acme.test' } })).status, 200)
+    ws.inside(() => run('UPDATE reset_outbox SET next_at = ?', Date.now() - 1))
+    await ws.inside(deliverResetOutbox)
+  }
+  assert.deepEqual([calls, pending(), ws.sent.length], [7, undefined, 1], 'after five failed tries the request is dropped')
 })
 
 test('sign-in attempts are counted in the database and survive a restart', async () => {

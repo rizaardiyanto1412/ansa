@@ -326,6 +326,15 @@ const migrations: string[] = [
   ) WITHOUT ROWID;
   CREATE INDEX attempts_reset ON attempts(reset_at);
   `,
+  `
+  CREATE TABLE reset_outbox (
+    email TEXT PRIMARY KEY,
+    tries INTEGER NOT NULL DEFAULT 0,
+    next_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE INDEX reset_outbox_next ON reset_outbox(next_at);
+  `,
 ]
 
 export const schemaVersion = () => get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0

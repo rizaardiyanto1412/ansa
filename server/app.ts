@@ -6,6 +6,7 @@ import { prunePresence } from './events.ts'
 import { handleMcp } from './mcp.ts'
 import { migrate, run } from './db.ts'
 import { loadHostedUrl } from './hosted.ts'
+import { deliverResetOutbox } from './services/accounts.ts'
 import { dispatchScheduled, wakeSnoozed } from './services/conversations.ts'
 
 export const SECURITY_HEADERS: Record<string, string> = {
@@ -70,5 +71,6 @@ export function startTimers() {
   every(15_000, prunePresence)
   every(30_000, wakeSnoozed)
   every(10_000, () => void dispatchScheduled().catch((err) => console.error('[send later]', err)))
+  every(10_000, () => void deliverResetOutbox().catch((err) => console.error('[reset outbox]', err)))
   every(3_600_000, pruneSessions)
 }

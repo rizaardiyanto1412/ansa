@@ -18,6 +18,7 @@ import { pruneSessions } from '../server/auth.ts'
 import type { ControlPlane, PlanState, SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
 import { pollAllMailboxes } from '../server/mail/imap.ts'
+import { deliverResetOutbox, nextResetAt } from '../server/services/accounts.ts'
 import { dispatchScheduled, nextScheduledAt, wakeSnoozed } from '../server/services/conversations.ts'
 import { importStatus, importStep } from '../server/services/import-helpscout.ts'
 
@@ -234,7 +235,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   protected async scheduleAlarm() {
     const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
-    const deadlines = [nextScheduledAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const deadlines = [nextScheduledAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
     const current = await this.ctx.storage.getAlarm()
     if (deadlines.length === 0) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -248,6 +249,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     await this.inTenant(async () => {
       const jobs = [
         ['wakeSnoozed', () => wakeSnoozed()],
+        ['deliverResetOutbox', () => deliverResetOutbox()],
         ['pruneSessions', () => pruneSessions()],
         ['importStep', async () => {
           try {

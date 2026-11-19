@@ -80,9 +80,9 @@ test('a control plane provisions a workspace over Durable Object RPC', async () 
 
   const invited = await call('POST', '/api/invites', { email: 'bo@acme.test', role: 'agent' }, session)
   assert.equal(invited.status, 201, JSON.stringify(invited.data))
-  const outbox = (await call('GET', '/__outbox')).data as { workspaceId: string; to: string; subject: string; text: string }[]
-  assert.deepEqual(outbox.map((mail) => ({ workspaceId: mail.workspaceId, to: mail.to, subject: mail.subject })), [{ workspaceId: 'acme', to: 'bo@acme.test', subject: 'Ada invited you to Acme Support' }], 'the invite went out through the CONTROL binding')
-  const accepted = await call('POST', '/api/links/consume', { token: tokenOf(outbox[0].text), name: 'Bo Li', password: 'bo chose this one' })
+  const sent = (await call('GET', '/__sent')).data as { workspaceId: string; to: string; subject: string; text: string }[]
+  assert.deepEqual(sent.map((mail) => ({ workspaceId: mail.workspaceId, to: mail.to, subject: mail.subject })), [{ workspaceId: 'acme', to: 'bo@acme.test', subject: 'Ada invited you to Acme Support' }], 'the invite went out through the CONTROL binding')
+  const accepted = await call('POST', '/api/links/consume', { token: tokenOf(sent[0].text), name: 'Bo Li', password: 'bo chose this one' })
   assert.equal(accepted.data.user?.name, 'Bo Li', 'the teammate joined from the emailed link')
 
   const blocked = await call('POST', '/api/apps', { name: 'Hook', webhookUrl: 'https://other.hosted.test/hook', events: ['conversation.created'] }, session)
@@ -93,10 +93,31 @@ test('the sign-in limit survives a restart of the object', async () => {
   const bad = { email: 'ada@acme.test', password: 'wrong' }
   for (let i = 0; i < 10; i++) assert.equal((await call('POST', '/api/login', bad)).status, 401)
   assert.equal((await call('POST', '/api/login', bad)).status, 429)
-  assert.equal((await call('GET', '/__outbox')).data.length, 1, 'the object still holds what it kept in memory')
+  assert.equal((await call('GET', '/__sent')).data.length, 1, 'the object still holds what it kept in memory')
 
   await harness.update({ workers: [{ configPath, vars: { RESTARTED: '1' } }] })
-  assert.equal((await call('GET', '/__outbox')).data.length, 0, 'the object started again: its memory is empty')
+  assert.equal((await call('GET', '/__sent')).data.length, 0, 'the object started again: its memory is empty')
   assert.equal((await call('POST', '/api/login', { email: 'ada@acme.test', password: 'correct horse 1' })).status, 429, 'the fresh object still counts the earlier attempts')
   assert.equal((await call('GET', '/api/bootstrap')).data.appUrl, APP_URL, 'and still knows its address')
+})
+
+test('a reset request is kept in the outbox and the alarm delivers it once', async () => {
+  const known = await call('POST', '/api/password/forgot', { email: 'ada@acme.test' })
+  const unknown = await call('POST', '/api/password/forgot', { email: 'nobody@acme.test' })
+  assert.deepEqual([known.status, unknown.status], [200, 200])
+  assert.deepEqual(unknown.data, known.data, 'the answer is the same for an unknown address')
+
+  const queued = (await call('GET', '/__reset-outbox')).data
+  assert.equal(queued.rows.length, 2, 'both requests wait in the outbox')
+  assert.ok(queued.alarm !== null && queued.alarm - Date.now() <= 2000, `the alarm is set for the outbox: ${queued.alarm}`)
+  assert.equal((await call('GET', '/__sent')).data.length, 0, 'nothing is sent while the request is answered')
+
+  let state = queued
+  for (let i = 0; i < 100 && (state.rows.length > 0 || state.alarm !== null); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    state = (await call('GET', '/__reset-outbox')).data
+  }
+  assert.deepEqual(state, { rows: [], alarm: null }, 'the alarm emptied the outbox and nothing else is waiting')
+  const sent = (await call('GET', '/__sent')).data as { workspaceId: string; to: string; subject: string }[]
+  assert.deepEqual(sent.map((mail) => ({ workspaceId: mail.workspaceId, to: mail.to, subject: mail.subject })), [{ workspaceId: 'acme', to: 'ada@acme.test', subject: 'Reset your password for Acme Support' }], 'CONTROL.sendSystemEmail ran once, for the teammate only')
 })

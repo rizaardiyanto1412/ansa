@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { currentTenant } from '../../server/tenant.ts'
 import { checkBlobStore } from '../../server/test/blob-probe.ts'
 import { decrypt, encrypt } from '../../server/crypto.ts'
-import { get, getSetting, run } from '../../server/db.ts'
+import { all, get, getSetting, run } from '../../server/db.ts'
 import type { SystemEmail } from '../../server/hosted.ts'
 import { addReply, createConversation } from '../../server/services/conversations.ts'
 import { interleavings, openSealed, probe } from '../../server/test/tenant-probe.ts'
@@ -29,10 +29,10 @@ const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'health']
 type RpcStub = Record<string, (input: unknown) => Promise<unknown>>
 
 export class ProbeStore extends AnsaStore {
-  private outbox: unknown[] = []
+  private sent: unknown[] = []
 
   async keepMail(mail: unknown) {
-    this.outbox.push(mail)
+    this.sent.push(mail)
   }
 
   constructor(ctx: DurableObjectState, env: StoreEnv) {
@@ -130,8 +130,10 @@ export class ProbeStore extends AnsaStore {
           await this.alarm()
           return Response.json(this.inTenant(() => get('SELECT state, error FROM threads WHERE id = ?', threadId)))
         }
-        case '/__outbox':
-          return Response.json(this.outbox)
+        case '/__sent':
+          return Response.json(this.sent)
+        case '/__reset-outbox':
+          return Response.json({ rows: this.inTenant(() => all('SELECT email, tries FROM reset_outbox')), alarm: await this.ctx.storage.getAlarm() })
         case '/__decrypt-outside':
           return Response.json({ opened: decrypt(this.inTenant(() => encrypt('hunter2'))) })
         case '/__decrypt-invalid':
