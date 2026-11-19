@@ -1,7 +1,3 @@
-/**
- * Cloudflare Workers platform for a self-hosted install. The whole app runs inside one Durable Object
- * (store.ts). The web app is served as static assets.
- */
 import { CODE_HEADER, codeStamp, type StoreEnv } from './store.ts'
 
 export { AnsaStore } from './store.ts'

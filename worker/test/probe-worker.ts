@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { decrypt, encrypt } from '../../server/crypto.ts'
 import { get, getSetting, run } from '../../server/db.ts'
 import { addReply, createConversation } from '../../server/services/conversations.ts'
 import { interleavings, openSealed, probe } from '../../server/test/tenant-probe.ts'
@@ -43,6 +44,10 @@ export class ProbeStore extends AnsaStore {
           await this.alarm()
           return Response.json(this.inTenant(() => get('SELECT state, error FROM threads WHERE id = ?', threadId)))
         }
+        case '/__decrypt-outside':
+          return Response.json({ opened: decrypt(this.inTenant(() => encrypt('hunter2'))) })
+        case '/__decrypt-invalid':
+          return Response.json({ opened: this.inTenant(() => decrypt('v1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAA')) })
         case '/__outside':
           return Response.json({ setting: getSetting('probe', '') })
       }
