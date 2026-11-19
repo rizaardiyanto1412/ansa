@@ -110,7 +110,7 @@ export function InboxPage({ search = false }: { search?: boolean }) {
       else next.add(id)
       return next
     })
-  const needsMail = !search && mailbox && !mailbox.imapEnabled && total === 0 && folder === 'unassigned'
+  const needsMail = !search && mailbox && (mailbox.kind === 'managed' ? !mailbox.receiving : !mailbox.imapEnabled) && total === 0 && folder === 'unassigned'
 
   if (selectedId) {
     return <ConversationView key={selectedId} id={selectedId} onBack={() => open(null)} onDone={advance} />

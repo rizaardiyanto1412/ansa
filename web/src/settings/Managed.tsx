@@ -7,6 +7,8 @@ import { brand } from '../lib/workspace'
 import type { Mailbox, ManagedMailbox } from '../lib/types'
 import { Banner, Button, Card, Field, Input, cx, useFeedback } from '../ui'
 
+const NO_COUNTS: Mailbox['counts'] = { unassigned: 0, mine: 0, assigned: 0, snoozed: 0, spam: 0, mentioned: 0 }
+
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   const { toast } = useFeedback()
@@ -56,8 +58,9 @@ export function ManagedMailboxStart({ onCreated, onAdvanced }: { onCreated: (mai
   const [error, setError] = useState<string | null>(null)
   const create = useMutation({
     mutationFn: () => api.post<{ mailbox: Mailbox }>('/mailboxes', { kind: 'managed', email, name: name.trim() || 'Support' }),
-    onSuccess: async ({ mailbox }) => {
-      await client.invalidateQueries({ queryKey: ['mailboxes'] })
+    onSuccess: ({ mailbox }) => {
+      client.setQueryData<Mailbox[]>(['mailboxes'], (old = []) => [...old.filter((m) => m.id !== mailbox.id), { ...mailbox, counts: NO_COUNTS }])
+      void client.invalidateQueries({ queryKey: ['mailboxes'] })
       onCreated(mailbox)
     },
     onError: (err: Error) => setError(err.message),
@@ -223,6 +226,8 @@ export function ForwardingSetup({ mailbox, managed }: { mailbox: Mailbox; manage
   )
 }
 
+const SHARED_MAIL_DOMAINS = ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'zoho.com']
+
 const SENDING_LABEL: Record<ManagedMailbox['sendingStatus'], string> = { none: 'Not set up', pending: 'Waiting for DNS', verified: 'Verified', failed: 'Not verified' }
 
 export function SendingDomain({ mailbox, managed }: { mailbox: Mailbox; managed: ManagedMailbox }) {
@@ -236,6 +241,16 @@ export function SendingDomain({ mailbox, managed }: { mailbox: Mailbox; managed:
     onError: (err: Error) => setError(err.message),
   })
   const status = managed.sendingStatus
+  if (status === 'none' && SHARED_MAIL_DOMAINS.includes(domain.toLowerCase())) {
+    return (
+      <Card className="p-5">
+        <h2 className="text-[15px] font-semibold">Sending replies</h2>
+        <p className="mt-3 text-[13px] text-fg-2">
+          Replies go out as “{mailbox.fromName || mailbox.name} via {brand()}” from a shared {brand()} address. Customers who answer still reach {mailbox.email}. To send from your own address, use an address on a domain you own: {domain} belongs to your email provider, so it cannot be verified.
+        </p>
+      </Card>
+    )
+  }
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -257,7 +272,7 @@ export function SendingDomain({ mailbox, managed }: { mailbox: Mailbox; managed:
           </p>
         ) : (
           <p>
-            Until <strong>{domain}</strong> is verified, replies go out as “{mailbox.fromName || mailbox.name} via {brand()}” from a {brand()} address, with a lower hourly limit. Customers who answer still reach {mailbox.email}.
+            Until <strong>{domain}</strong> is verified, replies go out as “{mailbox.fromName || mailbox.name} via {brand()}” from a shared {brand()} address, with a lower hourly limit. Customers who answer still reach {mailbox.email}.
           </p>
         )}
         {status === 'none' && (
