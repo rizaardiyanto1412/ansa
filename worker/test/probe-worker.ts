@@ -58,7 +58,7 @@ export class ProbeStore extends AnsaStore {
           return Response.json({ alarm: await this.ctx.storage.getAlarm() })
         }
         case '/__lifecycle':
-          return Response.json({ constructors: this.ctx.storage.kv.get('test:constructors'), messages: this.ctx.storage.kv.get('test:messages') ?? 0, constructorTimers: this.ctx.storage.kv.get('test:constructorTimers') ?? 0, alarm: await this.ctx.storage.getAlarm() })
+          return Response.json({ sockets: this.ctx.getWebSockets().length, constructors: this.ctx.storage.kv.get('test:constructors'), messages: this.ctx.storage.kv.get('test:messages') ?? 0, constructorTimers: this.ctx.storage.kv.get('test:constructorTimers') ?? 0, alarm: await this.ctx.storage.getAlarm() })
         case '/__notify':
           this.inTenant(() => publish({ type: 'refresh', scope: url.searchParams.get('scope') ?? 'test' }))
           return Response.json({ ok: true })

@@ -93,7 +93,7 @@ export class HibernatingEvents {
   close(socket: WebSocket, code = 1000) {
     const data = this.attachment(socket)
     if (data) socket.serializeAttachment({ ...data, presence: null } satisfies Attachment)
-    if (socket.readyState < 2) socket.close(code, code === 1008 ? 'Sign in again or check the message.' : 'Connection closed.')
+    if (socket.readyState !== 3) socket.close(code, code === 1008 ? 'Sign in again or check the message.' : 'Connection closed.')
     if (data?.presence) publish({ type: 'presence', conversationId: data.presence.conversationId, viewers: this.viewers()[data.presence.conversationId] ?? [] })
   }
 }

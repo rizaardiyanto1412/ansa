@@ -117,6 +117,7 @@ test('socket presence and workspace broadcasts survive hibernation, including mu
     one.socket.close(1000)
     await until(() => two.received.some((raw) => raw.includes('"viewers":[]')))
     assert.deepEqual((await viewers('socket-a', a.cookie)).viewers, {}, 'close after hibernation means left')
+    assert.equal((await call<{ sockets: number }>('socket-a', '/__lifecycle')).sockets, 1, 'the close handshake releases the accepted socket')
   } finally {
     for (const connection of [one, two, other]) {
       if (connection.socket.readyState < 2) connection.socket.close(1000)
@@ -135,6 +136,7 @@ test('automatic ping replies leave the object asleep and idle workspaces have no
     await worker.evictDurableObject('ANSA', { name: workspace, webSockets: 'hibernate' })
     connection.socket.send('ping')
     await until(() => connection.received.includes('pong'))
+    await assert.rejects(worker.evictDurableObject('ANSA', { name: workspace, webSockets: 'hibernate' }), /not currently running/, 'the runtime confirms ping left the object asleep')
     const after = await call<typeof before>(workspace, '/__lifecycle')
     assert.equal(after.constructors, before.constructors + 1, 'only the inspection request reconstructed the object; ping did not')
     assert.equal(after.messages, before.messages, 'ping bypassed the JavaScript handler')
