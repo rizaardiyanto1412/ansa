@@ -26,7 +26,7 @@ function scheduleDueReply(): number {
 
 const failure = (err: unknown) => new Response(err instanceof Error ? err.stack || err.message : String(err), { status: 500 })
 
-const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'health', 'ingestInbound', 'setSendingDomain', 'noteBounce', 'exportWorkspace', 'deleteWorkspace']
+const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'health', 'ingestInbound', 'setSendingDomain', 'noteBounce', 'exportWorkspace', 'deleteWorkspace', 'restoreBookmark', 'restoreTo']
 type RpcStub = Record<string, (...input: unknown[]) => Promise<unknown>>
 
 interface ControlScript {
@@ -112,6 +112,22 @@ export class ProbeStore extends AnsaStore {
           this.inTenant(() => publish({ type: 'refresh', scope: url.searchParams.get('scope') ?? 'test' }))
           return Response.json({ ok: true })
 
+        case '/__fake-pitr': {
+          const calls: unknown[][] = []
+          const { storage } = this.ctx
+          Object.defineProperty(storage, 'getBookmarkForTime', { configurable: true, value: async (at: number) => (calls.push(['getBookmarkForTime', at]), `bookmark-${at}`) })
+          Object.defineProperty(storage, 'onNextSessionRestoreBookmark', { configurable: true, value: async (bookmark: string) => (calls.push(['onNextSessionRestoreBookmark', bookmark]), 'undo-bookmark') })
+          Object.defineProperty(this.ctx, 'abort', { configurable: true, value: (reason?: string) => { calls.push(['abort']); throw new Error(`aborted: ${reason}`) } })
+          const at = Number(url.searchParams.get('at'))
+          const bookmark = await this.restoreBookmark(at)
+          let aborted = ''
+          try {
+            await this.restoreTo(at, url.searchParams.get('confirm') ?? '')
+          } catch (err) {
+            aborted = (err as Error).message
+          }
+          return Response.json({ bookmark, calls, aborted })
+        }
         case '/__workspace':
           this.ctx.storage.kv.put('workspaceId', url.searchParams.get('id') ?? url.hostname.split('.')[0])
           return Response.json({ ok: true })
@@ -239,7 +255,7 @@ export default {
       try {
         const input = (await request.json()) as { raw?: unknown } | null
         if (input && typeof input.raw === 'string') input.raw = new TextEncoder().encode(input.raw).buffer
-        return Response.json({ result: (await store[method](input)) ?? null })
+        return Response.json({ result: (await store[method](...(Array.isArray(input) ? input : [input]))) ?? null })
       } catch (err) {
         return Response.json({ error: { name: (err as Error).name, message: (err as Error).message } })
       }

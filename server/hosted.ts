@@ -41,6 +41,13 @@ export const BillingLinksSchema = z.object({
 })
 export type BillingLinks = z.infer<typeof BillingLinksSchema>
 
+export const RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+
+export interface WorkspaceRestoreRpc {
+  restoreBookmark(atMs: number): Promise<string>
+  restoreTo(atMs: number, confirm: string): Promise<never>
+}
+
 export interface HostedState {
   workspaceId: string
   workspaceName: string

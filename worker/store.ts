@@ -15,7 +15,7 @@ import { createApp, prepareData } from '../server/app.ts'
 import { HibernatingEvents } from './live.ts'
 import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
-import { rpcError, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
+import { rpcError, RESTORE_WINDOW_MS, type WorkspaceRestoreRpc, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
 import { ingestInbound, nextIngestCleanupAt, pruneInboundIngests, noteBounce, setSendingDomain } from '../server/services/managed.ts'
 import { exportArchive } from '../server/services/export.ts'
@@ -165,7 +165,7 @@ function storedSecret(ctx: DurableObjectState): string {
   return secret
 }
 
-export class AnsaStore extends DurableObject<StoreEnv> {
+export class AnsaStore extends DurableObject<StoreEnv> implements WorkspaceRestoreRpc {
   private tenant: Tenant
   private app: ReturnType<typeof createApp>
   private live: HibernatingEvents
@@ -296,6 +296,29 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       }
       return { r2Key }
     })
+  }
+
+  private restoreTime(atMs: unknown): number {
+    const now = Date.now()
+    const parsed = z.number().int().safeParse(atMs)
+    if (!parsed.success) throw rpcError('Invalid', 'The restore time must be a whole number of epoch milliseconds.')
+    if (parsed.data > now) throw rpcError('Invalid', 'The restore time is in the future.')
+    if (parsed.data < now - RESTORE_WINDOW_MS) throw rpcError('Invalid', 'The restore time is more than 30 days ago.')
+    return parsed.data
+  }
+
+  async restoreBookmark(atMs: number): Promise<string> {
+    this.hostedWorkspaceId()
+    return this.ctx.storage.getBookmarkForTime(this.restoreTime(atMs))
+  }
+
+  async restoreTo(atMs: number, confirm: string): Promise<never> {
+    const workspaceId = this.hostedWorkspaceId()
+    if (confirm !== workspaceId) throw rpcError('Invalid', 'The confirmation does not match this workspace ID.')
+    const bookmark = await this.ctx.storage.getBookmarkForTime(this.restoreTime(atMs))
+    const undo = await this.ctx.storage.onNextSessionRestoreBookmark(bookmark)
+    console.warn(`[restore] restoring to ${new Date(atMs).toISOString()}. Undo bookmark: ${undo}`)
+    this.ctx.abort('Restoring to an earlier point in time.')
   }
 
   async deleteWorkspace(): Promise<void> {
