@@ -273,6 +273,7 @@ test('an admin invites by email; the teammate chooses a name and a password', as
   assert.deepEqual({ email: invited.data.user.email, role: invited.data.user.role, pending: invited.data.user.pending }, { email: 'bo@acme.test', role: 'agent', pending: true })
   assert.equal(ws.sent.length, 1, 'one email went to the control plane')
   assert.deepEqual({ workspaceId: ws.sent[0].workspaceId, to: ws.sent[0].to, subject: ws.sent[0].subject }, { workspaceId: 'ws_acme', to: 'bo@acme.test', subject: 'Ada invited you to Acme Support' })
+  assert.equal(ws.sent[0].headers?.['X-Ansa-Kind'], 'invite', 'the invite says what kind of email it is')
   assert.ok(ws.sent[0].html.includes(`${HOSTED_URL}/link#`), 'the HTML part carries the link')
   const firstToken = tokenOf(ws.sent[0].text)
   assert.equal((await ws.call('POST', '/login', { body: { email: 'bo@acme.test', password: '' } })).status, 401, 'an invited teammate cannot sign in yet')

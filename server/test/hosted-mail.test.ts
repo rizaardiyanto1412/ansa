@@ -251,6 +251,7 @@ test('a managed mailbox notifies teammates through the control plane, and their 
     assert.deepEqual([notice.to, notice.subject], ['bo@acme.test', `[Support #${conversationId}] Where is my order`])
     assert.equal(notice.headers?.['Reply-To'], '"Support (Ansa)" <acme-m1@in.hosted.test>', 'answers go to the inbound address')
     assert.equal(notice.headers?.['X-Ansa-Notification'], '1')
+    assert.equal(notice.headers?.['X-Ansa-Kind'], 'notification')
     assert.match(notice.headers?.['Message-ID'] ?? '', /^<ansa-n\.\d+\.\d+\./, 'the signed id travels as a header')
     assert.match(notice.html, /Replying to this notification will email Cara/, 'the email offers reply by email')
     assert.ok(notice.text.length > 20, 'a plain-text part is included')

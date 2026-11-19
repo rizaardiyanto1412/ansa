@@ -91,6 +91,7 @@ const footnote = `This link works once and expires in ${LINK_HOURS} hours.`
 function inviteEmail(to: string, inviter: string, url: string): SystemEmail {
   const where = workspaceLabel()
   return {
+    kind: 'invite',
     to,
     subject: `${inviter} invited you to ${where}`,
     html: wrapEmailHtml(`<p>${escapeHtml(inviter)} invited you to answer customer email with the team at ${escapeHtml(where)}.</p>${button(url, 'Accept the invite')}<p style="color:#6b7280;">${footnote}</p>`),
@@ -101,6 +102,7 @@ function inviteEmail(to: string, inviter: string, url: string): SystemEmail {
 function resetEmail(to: string, url: string): SystemEmail {
   const where = workspaceLabel()
   return {
+    kind: 'reset',
     to,
     subject: `Reset your password for ${where}`,
     html: wrapEmailHtml(

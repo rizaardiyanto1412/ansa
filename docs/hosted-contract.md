@@ -32,12 +32,16 @@ Hosted `deleteWorkspace` closes sockets, stops mail polling, and deletes the obj
 
 Self-hosted attachment deletion remains immediate. Deleting an attachment, conversation, or mailbox still removes the corresponding blobs through the existing file-deletion paths.
 
+## System email
+
+Every system email carries an `X-Ansa-Kind` header, both through `CONTROL.sendSystemEmail` (in `message.headers`) and over SMTP. The value is one of `invite`, `reset`, `sign-in`, or `notification`. Core currently sends `invite`, `reset`, and `notification`; `sign-in` is reserved for sign-in links.
+
 ## Point-in-time restore
 
 `restoreBookmark(atMs)` returns the Durable Object bookmark for an epoch-millisecond time. `restoreTo(atMs, confirm)` rolls the workspace's whole SQLite database, including its key-value data, back to that time. Both need a provisioned hosted workspace and fail with `NotProvisioned` otherwise.
 
 `atMs` must be a whole number within the last 30 days and not in the future. Anything else fails with `Invalid`. `restoreTo` also fails with `Invalid` unless `confirm` equals the workspace ID stored in the object.
 
-`restoreTo` schedules the restore and then aborts the object, so the call always rejects. The object restarts restored, and the caller should treat the rejection as the start of the restore, not as a failure. The restore returns a bookmark for the state just before it, which the object writes to its log as `[restore] ... Undo bookmark`.
+`restoreTo` schedules the restore and then aborts the object. The call rejects or returns when the object restarts; check `health` afterwards. The restore returns a bookmark for the state just before it, which the object writes to its log as `[restore] ... Undo bookmark`.
 
 A restore never changes R2. Attachments added after the restore time stay in the bucket unreferenced, and attachments deleted after it are gone. Local `wrangler dev` and workerd do not implement point-in-time recovery, so the restore itself runs only on Cloudflare.

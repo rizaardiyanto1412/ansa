@@ -16,7 +16,7 @@ interface SqlCursor {
 }
 interface DurableObjectState {
   /** Stop this object now. The next request starts a fresh one with the latest code. Always throws. */
-  abort(reason?: string): never
+  abort(reason?: string): void
   waitUntil(promise: Promise<unknown>): void
   acceptWebSocket(socket: WebSocket): void
   getWebSockets(): WebSocket[]
