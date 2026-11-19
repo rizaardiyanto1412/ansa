@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import pkg from '../../package.json' with { type: 'json' }
@@ -24,7 +25,7 @@ interface CallOptions {
   cookie?: string
   // Null means no socket, as on Workers.
   address?: string | null
-  headers?: Record<string, string>
+  headers?: Record<string, string | undefined>
 }
 
 function install(env: Record<string, string>, origin: string, dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ansa-accounts-'))) {
@@ -39,7 +40,7 @@ function install(env: Record<string, string>, origin: string, dataDir = fs.mkdte
   async function call(method: string, route: string, { body, cookie, address = '203.0.113.7', headers = {} }: CallOptions = {}) {
     const request = new Request(`${origin}/api${route}`, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ansa', ...(cookie ? { Cookie: cookie } : {}), ...headers },
+      headers: Object.entries({ 'Content-Type': 'application/json', 'X-Requested-With': 'ansa', ...(cookie ? { Cookie: cookie } : {}), ...headers }).filter((entry): entry is [string, string] => entry[1] !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     const response = await inside(() => app.fetch(request, address === null ? undefined : { incoming: { socket: { remoteAddress: address } } }))
@@ -61,7 +62,7 @@ const provisionInput = (over: Partial<ProvisionInput> = {}): ProvisionInput => (
 })
 
 const tokenOf = (text: string) => /\/link#([\w-]+)/.exec(text)?.[1] ?? assert.fail(`no one-time link in: ${text}`)
-const settle = () => new Promise((resolve) => setImmediate(resolve))
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 const rows = (sql: string) => all<Record<string, unknown>>(sql).map((row) => ({ ...row }))
 
 async function hostedWorkspace() {
@@ -84,7 +85,9 @@ test('provision starts a workspace once; a second call only makes a new sign-in 
   const trial = provisionInput().planState
   assert.throws(() => ws.inside(() => setPlan(trial)), { name: 'NotProvisioned' }, 'setPlan before provision')
   assert.throws(() => ws.inside(() => setSmtp(provisionInput().smtp)), { name: 'NotProvisioned' }, 'setSmtp before provision')
-  assert.throws(() => ws.inside(() => provision(provisionInput({ appUrl: 'javascript:alert(1)' }))), { name: 'Invalid' }, 'a bad address is refused')
+  for (const appUrl of ['javascript:alert(1)', 'https://:443', 'https://acme.hosted.test:99999', 'http://[::1', 'https://user@acme.hosted.test', 'https://acme.hosted.test/path', '']) {
+    assert.throws(() => ws.inside(() => provision(provisionInput({ appUrl }))), { name: 'Invalid' }, `appUrl ${JSON.stringify(appUrl)} is refused as Invalid`)
+  }
   assert.equal(ws.inside(() => all('SELECT id FROM users')).length, 0, 'a refused call creates nobody')
 
   const first = ws.inside(() => provision(provisionInput()))
@@ -129,10 +132,24 @@ test('provision starts a workspace once; a second call only makes a new sign-in 
   assert.throws(() => self.inside(() => provision(provisionInput())), { name: 'Invalid' }, 'a self-hosted install cannot be provisioned')
 })
 
+test('hosted mode refuses a shared APP_SECRET on every platform', () => {
+  const env = (vars: Record<string, string>) => (key: string) => ({ DATA_DIR: os.tmpdir(), ...vars })[key]
+  assert.throws(() => readConfig(env({ ...HOSTED_ENV, APP_SECRET: 'x'.repeat(32) })), /APP_SECRET is set in hosted mode/)
+  assert.throws(() => readConfig(env({ ...HOSTED_ENV, APP_SECRET: 'short' })), /APP_SECRET is set in hosted mode/, 'even one too short to be used')
+  assert.equal(readConfig(env(HOSTED_ENV)).hosted, true, 'hosted mode starts without APP_SECRET')
+  assert.equal(readConfig(env({ APP_SECRET: 'x'.repeat(32) })).secret, 'x'.repeat(32), 'a self-hosted install may set APP_SECRET')
+})
+
 test('a hosted workspace has no first-visitor setup', async () => {
   const ws = install(HOSTED_ENV, HOSTED_URL)
   const setup = await ws.call('POST', '/setup', { body: { name: 'Mallory', email: 'mallory@evil.test', password: 'long enough password' } })
   assert.equal(setup.status, 404, 'POST /api/setup is off')
+  for (const route of ['/setup/', '//setup', '/SETUP', '/Setup//', '/%73etup']) {
+    for (const method of ['POST', 'GET']) {
+      const variant = await ws.call(method, route, { body: method === 'POST' ? { name: 'Mallory', email: 'mallory@evil.test', password: 'long enough password' } : undefined })
+      assert.equal(variant.status, 404, `${method} /api${route} is off too`)
+    }
+  }
   assert.equal(ws.inside(() => all('SELECT id FROM users')).length, 0, 'nobody was created')
   const before = (await ws.call('GET', '/bootstrap')).data
   assert.deepEqual(
@@ -200,6 +217,46 @@ test('a one-time link works once, for 24 hours, and only when the form is sent',
   const blocked = tokenOf(ws.inside(() => provision(provisionInput())).signInUrl)
   ws.inside(() => run('UPDATE users SET disabled = 1'))
   assert.equal((await ws.call('POST', '/links/consume', { body: { token: blocked } })).status, 404, 'a deactivated teammate cannot use a link')
+})
+
+test('a one-time link, like every other browser write, refuses cross-site requests', async () => {
+  const ws = install(HOSTED_ENV, HOSTED_URL)
+  const token = tokenOf(ws.inside(() => provision(provisionInput())).signInUrl)
+  const consume = (headers: Record<string, string | undefined>) => ws.call('POST', '/links/consume', { body: { token, password: 'correct horse 1' }, headers })
+  const foreign = 'https://evil.test'
+  const refusals: [string, Record<string, string | undefined>][] = [
+    ['a text/plain form from another site', { 'Content-Type': 'text/plain', 'X-Requested-With': undefined, Origin: foreign }],
+    ['a request without X-Requested-With', { 'X-Requested-With': undefined }],
+    ['a request without X-Requested-With from this site', { 'X-Requested-With': undefined, Origin: HOSTED_URL }],
+    ['another Origin', { Origin: foreign }],
+    ['a sibling workspace', { Origin: 'https://other.hosted.test' }],
+    ['another Referer', { Referer: `${foreign}/page` }],
+    ['an opaque Origin', { Origin: 'null' }],
+  ]
+  for (const [what, headers] of refusals) {
+    const refused = await consume(headers)
+    assert.deepEqual([refused.status, refused.cookie], [403, ''], `${what} is refused and signs nobody in`)
+  }
+  assert.equal((await ws.call('POST', '/links/inspect', { body: { token }, headers: { Origin: foreign } })).status, 403, 'looking at a link from another site is refused too')
+  assert.equal((await ws.call('POST', '/links/inspect', { body: { token } })).status, 200, 'the refusals left the link unused')
+
+  const joined = await consume({ Origin: HOSTED_URL, Referer: `${HOSTED_URL}/link` })
+  assert.equal(joined.status, 200, 'the same site may use the link')
+  assert.ok(joined.cookie, 'and is signed in')
+
+  const login = { email: 'ada@acme.test', password: 'correct horse 1' }
+  assert.equal((await ws.call('POST', '/login', { body: login, headers: { Origin: foreign } })).status, 403, 'sign-in from another site is refused')
+  assert.equal((await ws.call('POST', '/password/forgot', { body: { email: login.email }, headers: { 'X-Requested-With': undefined } })).status, 403, 'so is a reset request without the header')
+  assert.equal((await ws.call('POST', '/login', { body: login, headers: { Origin: HOSTED_URL } })).status, 200)
+  assert.equal((await ws.call('PATCH', '/me', { cookie: joined.cookie, body: { name: 'Eve' }, headers: { Origin: foreign } })).status, 403, 'a signed-in write from another site is refused')
+  assert.equal((await ws.call('PATCH', '/me', { cookie: joined.cookie, body: { name: 'Ada L' }, headers: { Origin: HOSTED_URL } })).status, 200)
+
+  const proxied = install({ APP_URL: 'https://help.example.test' }, 'http://ansa:3000')
+  const setup = await proxied.call('POST', '/setup', { body: { name: 'Sol', email: 'sol@self.test', password: 'self pass' }, headers: { Origin: 'https://help.example.test' } })
+  assert.equal(setup.status, 200, 'behind a proxy that ends TLS, the APP_URL host counts as this site')
+  const local = install({}, 'http://192.168.1.5:3000')
+  const direct = await local.call('POST', '/setup', { body: { name: 'Sol', email: 'sol@self.test', password: 'self pass' }, headers: { Origin: 'http://192.168.1.5:3000' } })
+  assert.equal(direct.status, 200, 'without APP_URL, the host the browser used counts as this site')
 })
 
 test('an admin invites by email; the teammate chooses a name and a password', async () => {
@@ -283,9 +340,12 @@ test('a self-hosted install invites through its first mailbox, or says why it ca
 test('forgot password answers the same for everyone and emails a single-use link', async () => {
   const ws = await hostedWorkspace()
   const known = await ws.call('POST', '/password/forgot', { body: { email: 'Ada@acme.test' } })
+  const resetLinks = () => ws.inside(() => all(`SELECT id FROM one_time_links WHERE purpose = 'reset'`)).length
+  assert.deepEqual([resetLinks(), ws.sent.length], [0, 0], 'the answer leaves before Ansa looks the address up, so its timing tells nothing')
   const unknown = await ws.call('POST', '/password/forgot', { body: { email: 'nobody@acme.test' } })
   const malformed = await ws.call('POST', '/password/forgot', { body: { email: 'nonsense' } })
   await settle()
+  assert.equal(resetLinks(), 1, 'the link is made right after')
   assert.deepEqual([known.status, known.data], [200, { ok: true }])
   assert.deepEqual([unknown.status, unknown.data], [known.status, known.data], 'an unknown address gets the same answer')
   assert.deepEqual([malformed.status, malformed.data], [known.status, known.data], 'so does a malformed one')
@@ -379,9 +439,45 @@ test('apps cannot call the workspace itself or, on a hosted install, its neighbo
   const admin = { cookie: ws.adminCookie }
   const app = (webhookUrl: string) => ws.call('POST', '/apps', { ...admin, body: { name: 'Hook', webhookUrl, events: ['conversation.created'] } })
 
-  const own = await app(`${HOSTED_URL}/api/setup`)
-  assert.equal(own.status, 400)
-  assert.match(own.data.error, /address of this workspace/)
+  for (const url of [`${HOSTED_URL}/api/setup`, `${HOSTED_URL}:8443/hook`, 'http://ACME.hosted.test:80/hook']) {
+    const own = await app(url)
+    assert.equal(own.status, 400, `${url} is refused`)
+    assert.match(own.data.error, /address of this workspace/, `${url} is this workspace, whatever the port`)
+  }
+  const internal = [
+    'http://localhost/hook',
+    'http://LOCALHOST.:4000/hook',
+    'http://api.localhost/hook',
+    'http://127.0.0.1/hook',
+    'http://0x7f.1/hook',
+    'http://2130706433/hook',
+    'http://0.0.0.0/hook',
+    'http://10.1.2.3/hook',
+    'http://100.64.0.1/hook',
+    'http://169.254.169.254/latest/meta-data',
+    'http://172.16.0.1/hook',
+    'http://172.31.255.255/hook',
+    'http://192.168.1.1:8080/hook',
+    'http://[::1]/hook',
+    'http://[::]/hook',
+    'http://[0:0:0:0:0:0:0:1]/hook',
+    'http://[::ffff:127.0.0.1]/hook',
+    'http://[::ffff:a9fe:a9fe]/hook',
+    'http://[::10.0.0.1]/hook',
+    'http://[64:ff9b::192.168.0.1]/hook',
+    'http://[fc00::1]/hook',
+    'http://[fd12:3456::1]/hook',
+    'http://[fe80::1]/hook',
+    'http://[fec0::1]/hook',
+  ]
+  for (const url of internal) {
+    const refused = await app(url)
+    assert.equal(refused.status, 400, `${url} is refused`)
+    assert.match(refused.data.error, /private or local network/, `${url} is a private or local address`)
+  }
+  for (const url of ['http://8.8.8.8/hook', 'http://172.32.0.1/hook', 'http://[2606:4700::1111]/hook', 'http://[::ffff:8.8.8.8]/hook']) {
+    assert.equal((await app(url)).status, 201, `${url} is a public address`)
+  }
   for (const url of ['https://other.hosted.test/hook', 'http://other.hosted.test/hook', 'https://HOSTED.test./hook', 'https://a.b.hosted.test:8443/hook']) {
     const refused = await app(url)
     assert.equal(refused.status, 400, `${url} is refused`)
@@ -401,5 +497,23 @@ test('apps cannot call the workspace itself or, on a hosted install, its neighbo
   const local = (webhookUrl: string) => self.call('POST', '/apps', { cookie: self.adminCookie, body: { name: 'Hook', webhookUrl, events: ['conversation.created'] } })
   assert.equal((await local(`${LOCAL_URL}/api/setup`)).status, 400, 'a self-hosted install refuses its own address')
   assert.equal((await local('http://localhost:4000/hook')).status, 201, 'another port on the same machine is another server')
+  assert.equal((await local('http://192.168.1.20/hook')).status, 201, 'a self-hosted admin may call an app on the private network')
+
+  const landed: string[] = []
+  const target = http.createServer((req, res) => {
+    landed.push(req.url ?? '')
+    if (req.url === '/hook') res.writeHead(302, { Location: '/landed' }).end()
+    else res.writeHead(200).end('ok')
+  })
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve))
+  try {
+    const { port } = target.address() as { port: number }
+    const created = await local(`http://127.0.0.1:${port}/hook`)
+    const tested = await self.inside(() => testApp(created.data.app.id))
+    assert.equal(tested.webhook?.ok, false, 'a redirect is not a success')
+    assert.deepEqual(landed, ['/hook'], 'and Ansa does not follow it')
+  } finally {
+    await new Promise((resolve) => target.close(resolve))
+  }
   assert.equal((await local('https://other.hosted.test/hook')).status, 201, 'without APP_BLOCKED_HOST_SUFFIX no domain is off limits')
 })

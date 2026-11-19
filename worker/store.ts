@@ -122,15 +122,9 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   constructor(ctx: DurableObjectState, env: StoreEnv) {
     super(ctx, env)
-    if (env.ANSA_HOSTED === '1' && env.APP_SECRET) {
-      throw new Error('APP_SECRET is set in hosted mode. Remove it: every workspace must keep its own generated secret.')
-    }
-
-    if (env.ANSA_HOSTED === '1' && !env.ATTACHMENTS) {
-      throw new Error('ATTACHMENTS is required in hosted mode.')
-    }
-
     const config = readConfig((name) => (typeof env[name] === 'string' ? env[name] : undefined))
+    if (config.hosted && !env.ATTACHMENTS) throw new Error('ATTACHMENTS is required in hosted mode.')
+
     if (!config.secret) config.secret = storedSecret(ctx)
     if (!config.appUrlFixed) config.appUrl = ctx.storage.kv.get<string>('appUrl') ?? config.appUrl
     config.imapPollOnly = true

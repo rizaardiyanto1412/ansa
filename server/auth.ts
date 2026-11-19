@@ -103,7 +103,30 @@ export function userFromBearer(header: string | undefined | null): { user: User;
   return { user: serializeUser(row), access: row.token_access === 'internal' ? 'internal' : 'full' }
 }
 
-/** Accepts a browser session or an API token. Browser writes must carry X-Requested-With (CSRF guard). */
+const hostOfUrl = (value: string) => {
+  try {
+    return new URL(value).host.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A browser write must carry X-Requested-With, which no cross-site form can send, and come from this site.
+ * Hosts are compared without the scheme because a proxy that ends TLS hands Ansa an http:// request.
+ */
+function crossSiteWrite(c: Context): boolean {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return false
+  if (c.req.header('x-requested-with') !== 'ansa') return true
+  const source = c.req.header('origin') ?? c.req.header('referer')
+  if (source === undefined) return false
+  const from = hostOfUrl(source)
+  return from === null || (from !== hostOfUrl(c.req.url) && from !== hostOfUrl(config.appUrl))
+}
+
+export const blockCrossSite: MiddlewareHandler = async (c, next) => (crossSiteWrite(c) ? c.json({ error: 'Request blocked.' }, 403) : next())
+
+/** Accepts a browser session or an API token. */
 export const requireAuth: MiddlewareHandler<Env> = async (c, next) => {
   const bearer = userFromBearer(c.req.header('authorization'))
   if (bearer) {
@@ -114,9 +137,7 @@ export const requireAuth: MiddlewareHandler<Env> = async (c, next) => {
   }
   const user = userFromSession(c)
   if (!user) return c.json({ error: 'Sign in to continue.' }, 401)
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && c.req.header('x-requested-with') !== 'ansa') {
-    return c.json({ error: 'Request blocked.' }, 403)
-  }
+  if (crossSiteWrite(c)) return c.json({ error: 'Request blocked.' }, 403)
   c.set('user', user)
   c.set('via', 'web')
   c.set('access', 'full')
@@ -140,7 +161,6 @@ export function clientAddress(c: Context): string {
   return hop || socket.remoteAddress || 'unknown'
 }
 
-/** Returns false when this key has been tried too often in the window. */
 export function allowAttempt(key: string, max = 10, windowMs = 15 * 60_000): boolean {
   const ts = now()
   const id = sha256(key)
@@ -151,7 +171,6 @@ export function allowAttempt(key: string, max = 10, windowMs = 15 * 60_000): boo
 }
 export const clearAttempts = (key: string) => run('DELETE FROM attempts WHERE key = ?', sha256(key))
 
-/** Drop expired sessions and one-time links. The platform calls this about once an hour. */
 export function pruneSessions() {
   run('DELETE FROM sessions WHERE expires_at < ?', now())
   run('DELETE FROM one_time_links WHERE expires_at < ?', now())

@@ -12,14 +12,26 @@ import { isEmail, normEmail } from './customers.ts'
 
 export const CORE_VERSION: string = pkg.version
 
+function safeUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
 const ProvisionSchema = z.object({
   workspaceId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
   workspaceName: z.string().trim().min(1).max(100),
   appUrl: z
     .string()
     .max(500)
-    .refine((value) => /^https?:\/\/[^/?#]+\/?$/.test(value), 'appUrl must be an origin like https://acme.example.com')
-    .transform((value) => new URL(value).origin),
+    .transform((value, ctx) => {
+      const url = /^https?:\/\/[^/?#@]+\/?$/.test(value) ? safeUrl(value) : null
+      if (url) return url.origin
+      ctx.addIssue({ code: 'custom', message: 'appUrl must be an origin like https://acme.example.com' })
+      return z.NEVER
+    }),
   admin: z.object({
     name: z.string().trim().min(1).max(100),
     email: z.string().max(254).refine(isEmail, 'admin.email must be an email address').transform(normEmail),

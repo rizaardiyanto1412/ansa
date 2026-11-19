@@ -6,6 +6,7 @@ import { hostedState, type SystemEmail } from '../hosted.ts'
 import { escapeHtml } from '../mail/html.ts'
 import { wrapEmailHtml } from '../mail/outbound.ts'
 import { sendSystemEmail } from '../mail/system.ts'
+import { bindTenant } from '../tenant.ts'
 import { AppError, isEmail, normEmail } from './customers.ts'
 import { brandName } from './workspace.ts'
 
@@ -141,11 +142,17 @@ export function cancelInvite(userId: number) {
   if (run(`DELETE FROM users WHERE id = ? AND password_hash = ''`, userId).changes !== 1) throw new AppError('That invite is no longer waiting.', 409)
 }
 
-export function requestPasswordReset(emailRaw: unknown) {
-  if (!isEmail(emailRaw)) return
-  const email = normEmail(emailRaw)
+function sendResetLink(email: string) {
   const allowed = allowAttempt(`reset:to:${email}`, 3, HOUR)
   const user = get<{ id: number; email: string }>('SELECT id, email FROM users WHERE email = ? AND disabled = 0', email)
   if (!user || !allowed) return
-  void sendSystemEmail(resetEmail(user.email, issueLink(user.id, 'reset'))).catch((err) => console.error('[accounts] could not send a reset link:', (err as Error).message))
+  return sendSystemEmail(resetEmail(user.email, issueLink(user.id, 'reset')))
+}
+
+// The answer leaves before Ansa looks the address up, so its timing cannot tell whether a teammate has it.
+export function requestPasswordReset(emailRaw: unknown) {
+  if (!isEmail(emailRaw)) return
+  const email = normEmail(emailRaw)
+  const job = bindTenant(async () => sendResetLink(email))
+  setTimeout(() => void job().catch((err) => console.error('[accounts] could not send a reset link:', (err as Error).message)), 0)
 }

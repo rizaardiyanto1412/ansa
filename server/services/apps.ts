@@ -65,17 +65,56 @@ const parseUrl = (url: string) => {
 
 // Ports 80 and 443 are one door: the same site usually answers on both.
 const door = (url: URL) => url.port || 'web'
+const hostOf = (url: URL) => url.hostname.toLowerCase().replace(/\.$/, '')
+
+function ipv4Of(name: string): number[] | null {
+  const parts = name.split('.')
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part))) return null
+  const bytes = parts.map(Number)
+  return bytes.every((byte) => byte <= 255) ? bytes : null
+}
+
+function ipv6Of(name: string): number[] | null {
+  const literal = /^\[([0-9a-f:]+)\]$/.exec(name)?.[1]
+  if (!literal) return null
+  const words = (text: string) => (text ? text.split(':').map((word) => parseInt(word, 16)) : [])
+  const [head, tail] = literal.split('::')
+  if (tail === undefined) return words(head)
+  const left = words(head)
+  const right = words(tail)
+  return [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right]
+}
+
+const internalV4 = ([a, b]: number[]) =>
+  a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168)
+
+function internalV6(w: number[]): boolean {
+  const zeros = (from: number, to: number) => w.slice(from, to).every((word) => word === 0)
+  const embedsV4 = (zeros(0, 5) && (w[5] === 0 || w[5] === 0xffff)) || (w[0] === 0x64 && w[1] === 0xff9b && zeros(2, 6))
+  if (embedsV4) return internalV4([w[6] >> 8, w[6] & 0xff])
+  return (w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xffc0) === 0xfec0
+}
+
+function isInternalHost(name: string): boolean {
+  if (name === 'localhost' || name.endsWith('.localhost')) return true
+  const v4 = ipv4Of(name)
+  if (v4) return internalV4(v4)
+  const v6 = ipv6Of(name)
+  return v6 !== null && internalV6(v6)
+}
 
 /**
- * An app that points back at the workspace, or at a neighbour on the hosted domain, would make Ansa
- * send requests the app's owner could not send. Another port on the same machine is a different server.
+ * An app that points back at the workspace, at its private network, or at a neighbour on the hosted domain,
+ * would make Ansa send requests the app's owner could not send. A self-hosted admin owns that network,
+ * and docs/apps.md promises that an app on another port of the same machine works.
  */
 export function targetRefusal(url: string): string | null {
   const target = parseUrl(url)
   if (!target) return null
-  const name = target.hostname.toLowerCase().replace(/\.$/, '')
+  const name = hostOf(target)
   const own = parseUrl(config.appUrl)
-  if (own && name === own.hostname.toLowerCase() && door(target) === door(own)) return 'An app cannot use the address of this workspace.'
+  if (own && name === hostOf(own) && (config.hosted || door(target) === door(own))) return 'An app cannot use the address of this workspace.'
+  if (config.hosted && isInternalHost(name)) return 'An app cannot use a private or local network address.'
   const suffix = config.appBlockedHostSuffix
   if (suffix && (name === suffix || name.endsWith(`.${suffix}`))) return `An app cannot use an address on ${suffix}.`
   return null

@@ -6,6 +6,7 @@ import { config } from './config.ts'
 import { decrypt, encrypt, hashPassword, randomToken, sha256, verifyPassword } from './crypto.ts'
 import {
   allowAttempt,
+  blockCrossSite,
   clearAttempts,
   clientAddress,
   endSession,
@@ -93,6 +94,20 @@ api.onError((err, c) => {
   return c.json({ error: 'Something went wrong on the server.' }, 500)
 })
 
+const decodedPath = (path: string) => {
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
+}
+const isSetupPath = (path: string) => /^\/+api\/+setup\/*$/i.test(decodedPath(path))
+
+api.use('*', async (c, next) => {
+  if (config.hosted && isSetupPath(c.req.path)) throw new AppError('Not found.', 404)
+  return next()
+})
+
 // ---------------------------------------------------------------------------------------------
 // Public: bootstrap, setup, sign in
 // ---------------------------------------------------------------------------------------------
@@ -139,8 +154,7 @@ api.get('/brand/manifest', (c) => {
   return new Response(JSON.stringify(manifest), { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' } })
 })
 
-api.post('/setup', async (c) => {
-  if (config.hosted) throw new AppError('Not found.', 404)
+api.post('/setup', blockCrossSite, async (c) => {
   if (hasUsers()) throw new AppError('Setup is already complete.', 409)
   const data = await body(c)
   const name = str(data.name, 100)
@@ -156,7 +170,7 @@ api.post('/setup', async (c) => {
   return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) })
 })
 
-api.post('/login', async (c) => {
+api.post('/login', blockCrossSite, async (c) => {
   const data = await body(c)
   const email = str(data.email, 200).toLowerCase()
   const key = `login:${clientAddress(c)}:${email}`
@@ -170,7 +184,7 @@ api.post('/login', async (c) => {
   return c.json({ user: serializeUser(row) })
 })
 
-api.post('/logout', (c) => {
+api.post('/logout', blockCrossSite, (c) => {
   endSession(c)
   return c.json({ ok: true })
 })
@@ -179,12 +193,12 @@ const limitLinkUse = (c: Parameters<typeof clientAddress>[0]) => {
   if (!allowAttempt(`link:${clientAddress(c)}`, 100)) throw new AppError('Too many attempts. Wait 15 minutes and try again.', 429)
 }
 
-api.post('/links/inspect', async (c) => {
+api.post('/links/inspect', blockCrossSite, async (c) => {
   limitLinkUse(c)
   return c.json({ link: inspectLink((await body(c)).token) })
 })
 
-api.post('/links/consume', async (c) => {
+api.post('/links/consume', blockCrossSite, async (c) => {
   limitLinkUse(c)
   const data = await body(c)
   const id = consumeLink(data.token, { name: data.name, password: data.password })
@@ -192,7 +206,7 @@ api.post('/links/consume', async (c) => {
   return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) })
 })
 
-api.post('/password/forgot', async (c) => {
+api.post('/password/forgot', blockCrossSite, async (c) => {
   if (!allowAttempt(`reset:from:${clientAddress(c)}`, 10, 3_600_000)) throw new AppError('Too many requests. Wait an hour and try again.', 429)
   requestPasswordReset((await body(c)).email)
   return c.json({ ok: true })

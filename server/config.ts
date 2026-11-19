@@ -26,13 +26,14 @@ export interface Config {
   appBlockedHostSuffix: string
 }
 
-/** Settings from one install's environment. No side effects: the platform completes `secret` and `appUrl`. */
+/** Settings from one install's environment. Throws on settings no platform may run with; the platform completes `secret` and `appUrl`. */
 export function readConfig(env: (name: string) => string | undefined): Config {
   const dataDir = path.resolve(env('DATA_DIR') || './data')
   const port = Number(env('PORT') || 3000)
   const configuredUrl = (env('APP_URL') || '').replace(/\/+$/, '')
   const secret = env('APP_SECRET') || ''
   const hosted = env('ANSA_HOSTED') === '1'
+  if (hosted && secret) throw new Error('APP_SECRET is set in hosted mode. Remove it: every workspace must keep its own generated secret.')
   return {
     port,
     host: env('HOST') || '0.0.0.0',

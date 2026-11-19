@@ -240,7 +240,7 @@ Then, in Ansa:
 4. Press **Create app**. Copy the **signing secret** into your app.
 5. Press **Send a test**. You see the sidebar preview and the webhook result.
 
-Ansa must be able to reach your address. An app on `localhost` works only when Ansa runs on the same machine. For Ansa on Cloudflare, your app needs a public HTTPS address.
+Ansa must be able to reach your address. An app on `localhost` works only when Ansa runs on the same machine. For Ansa on Cloudflare, your app needs a public HTTPS address. An app cannot use the address of the workspace itself. A hosted workspace also refuses `localhost` and private, loopback and link-local IP addresses, and Ansa never follows a redirect from an app.
 
 ## When something does not work
 
