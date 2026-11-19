@@ -6,6 +6,7 @@ import { STATUS_LABEL } from './format'
 import type { Status } from './types'
 
 export interface Workspace {
+  name: string
   /** Empty means the default name. */
   brandName: string
   logoUrl: string | null
@@ -14,7 +15,7 @@ export interface Workspace {
 }
 
 const DEFAULT_NAME = 'Ansa'
-let current: Workspace = { brandName: '', logoUrl: null, mentions: false, fourStatuses: false }
+let current: Workspace = { name: '', brandName: '', logoUrl: null, mentions: false, fourStatuses: false }
 let defaultIcon: string | null = null
 let defaultTouchIcon: string | null = null
 
@@ -49,6 +50,7 @@ export function applyWorkspace(next: Workspace) {
 export const workspace = () => current
 /** The product name to show. */
 export const brand = () => current.brandName || DEFAULT_NAME
+export const place = () => current.name || brand()
 /** The statuses a person can pick, in order. */
 export const statusOptions = (): Status[] => (current.fourStatuses ? ['active', 'waiting', 'pending', 'closed'] : ['active', 'pending', 'closed'])
 export const STATUS_DOT: Record<string, string> = { active: 'bg-ok', waiting: 'bg-accent', pending: 'bg-warn', closed: 'bg-fg-3', spam: 'bg-danger' }

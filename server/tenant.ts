@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { BlobStore } from './blobs.ts'
 import type { Config } from './config.ts'
 import type { Driver } from './db.ts'
+import type { ControlPlane } from './hosted.ts'
 import type { Listener, PresenceEntry, Viewer } from './events.ts'
 import type { User } from './auth.ts'
 import type { MailboxWorker } from './mail/imap.ts'
@@ -20,7 +21,7 @@ export interface Tenant {
   listeners: Set<Listener>
   presence: Map<number, Map<number, PresenceEntry>>
   autoReplyLog: Map<string, number>
-  signInAttempts: Map<string, { count: number; resetAt: number }>
+  control: ControlPlane | null
   importing: { stepping: boolean; looping: boolean }
   imapWorkers: Map<number, MailboxWorker>
 }
@@ -34,7 +35,7 @@ export function createTenant(init: Pick<Tenant, 'config' | 'db' | 'blobs'>): Ten
     listeners: new Set(),
     presence: new Map(),
     autoReplyLog: new Map(),
-    signInAttempts: new Map(),
+    control: null,
     importing: { stepping: false, looping: false },
     imapWorkers: new Map(),
   }

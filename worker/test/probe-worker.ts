@@ -1,8 +1,10 @@
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import { EventEmitter } from 'node:events'
 import { currentTenant } from '../../server/tenant.ts'
 import { checkBlobStore } from '../../server/test/blob-probe.ts'
 import { decrypt, encrypt } from '../../server/crypto.ts'
-import { get, getSetting, run } from '../../server/db.ts'
+import { all, get, getSetting, run } from '../../server/db.ts'
+import type { SystemEmail } from '../../server/hosted.ts'
 import { addReply, createConversation } from '../../server/services/conversations.ts'
 import { interleavings, openSealed, probe } from '../../server/test/tenant-probe.ts'
 import { publish } from '../../server/events.ts'
@@ -23,7 +25,16 @@ function scheduleDueReply(): number {
 
 const failure = (err: unknown) => new Response(err instanceof Error ? err.stack || err.message : String(err), { status: 500 })
 
+const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'health']
+type RpcStub = Record<string, (input: unknown) => Promise<unknown>>
+
 export class ProbeStore extends AnsaStore {
+  private sent: unknown[] = []
+
+  async keepMail(mail: unknown) {
+    this.sent.push(mail)
+  }
+
   constructor(ctx: DurableObjectState, env: StoreEnv) {
     const interval = globalThis.setInterval
     const timeout = globalThis.setTimeout
@@ -119,6 +130,10 @@ export class ProbeStore extends AnsaStore {
           await this.alarm()
           return Response.json(this.inTenant(() => get('SELECT state, error FROM threads WHERE id = ?', threadId)))
         }
+        case '/__sent':
+          return Response.json(this.sent)
+        case '/__reset-outbox':
+          return Response.json({ rows: this.inTenant(() => all('SELECT email, tries FROM reset_outbox')), alarm: await this.ctx.storage.getAlarm() })
         case '/__decrypt-outside':
           return Response.json({ opened: decrypt(this.inTenant(() => encrypt('hunter2'))) })
         case '/__decrypt-invalid':
@@ -133,9 +148,26 @@ export class ProbeStore extends AnsaStore {
   }
 }
 
+export class ControlPlane extends WorkerEntrypoint<Env> {
+  async sendSystemEmail(workspaceId: string, message: SystemEmail) {
+    const store = this.env.ANSA.get(this.env.ANSA.idFromName(workspaceId)) as unknown as RpcStub
+    await store.keepMail({ workspaceId, ...message })
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const name = new URL(request.url).hostname.split('.')[0]
+    const url = new URL(request.url)
+    const name = url.hostname.split('.')[0]
+    const method = /^\/__rpc\/(\w+)$/.exec(url.pathname)?.[1]
+    if (method && RPC_METHODS.includes(method)) {
+      const store = env.ANSA.get(env.ANSA.idFromName(name)) as unknown as RpcStub
+      try {
+        return Response.json({ result: (await store[method](await request.json())) ?? null })
+      } catch (err) {
+        return Response.json({ error: { name: (err as Error).name, message: (err as Error).message } })
+      }
+    }
     try {
       return await env.ANSA.get(env.ANSA.idFromName(name)).fetch(request)
     } catch (err) {

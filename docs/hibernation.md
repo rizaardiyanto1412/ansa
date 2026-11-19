@@ -8,4 +8,4 @@ Clients must send `ping` every 30 seconds. Sockets with no heartbeat for 75 seco
 
 Invalid messages close with 1003 (unsupported input) or 1007 (invalid JSON or presence). Only authentication failures close with 1008.
 
-Cloudflare starts no periodic application timers. Its alarm selects the earliest snooze, scheduled reply, import step or import retry, or IMAP poll. IMAP and import deadlines persist across reconstruction. Removing the last job removes the alarm. An open socket adds no alarm.
+Cloudflare starts no periodic application timers. Its alarm selects the earliest snooze, scheduled reply, password-reset email, import step or import retry, or IMAP poll. IMAP, import and reset deadlines persist across reconstruction. Removing the last job removes the alarm. An open socket adds no alarm.

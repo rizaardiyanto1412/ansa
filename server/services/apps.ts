@@ -55,6 +55,71 @@ const rowOf = (id: number) => {
 export const listApps = () => all<AppRow>('SELECT * FROM apps ORDER BY name').map(serializeApp)
 export const getApp = (id: number) => serializeApp(rowOf(id))
 
+const parseUrl = (url: string) => {
+  try {
+    return new URL(url)
+  } catch {
+    return null
+  }
+}
+
+// Ports 80 and 443 are one door: the same site usually answers on both.
+const door = (url: URL) => url.port || 'web'
+const hostOf = (url: URL) => url.hostname.toLowerCase().replace(/\.$/, '')
+
+function ipv4Of(name: string): number[] | null {
+  const parts = name.split('.')
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part))) return null
+  const bytes = parts.map(Number)
+  return bytes.every((byte) => byte <= 255) ? bytes : null
+}
+
+function ipv6Of(name: string): number[] | null {
+  const literal = /^\[([0-9a-f:]+)\]$/.exec(name)?.[1]
+  if (!literal) return null
+  const words = (text: string) => (text ? text.split(':').map((word) => parseInt(word, 16)) : [])
+  const [head, tail] = literal.split('::')
+  if (tail === undefined) return words(head)
+  const left = words(head)
+  const right = words(tail)
+  return [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right]
+}
+
+const internalV4 = ([a, b]: number[]) =>
+  a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168)
+
+function internalV6(w: number[]): boolean {
+  const zeros = (from: number, to: number) => w.slice(from, to).every((word) => word === 0)
+  const embedsV4 = (zeros(0, 5) && (w[5] === 0 || w[5] === 0xffff)) || (w[0] === 0x64 && w[1] === 0xff9b && zeros(2, 6))
+  if (embedsV4) return internalV4([w[6] >> 8, w[6] & 0xff])
+  return (w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xffc0) === 0xfec0
+}
+
+function isInternalHost(name: string): boolean {
+  if (name === 'localhost' || name.endsWith('.localhost')) return true
+  const v4 = ipv4Of(name)
+  if (v4) return internalV4(v4)
+  const v6 = ipv6Of(name)
+  return v6 !== null && internalV6(v6)
+}
+
+/**
+ * An app that points back at the workspace, at its private network, or at a neighbour on the hosted domain,
+ * would make Ansa send requests the app's owner could not send. A self-hosted admin owns that network,
+ * and docs/apps.md promises that an app on another port of the same machine works.
+ */
+export function targetRefusal(url: string): string | null {
+  const target = parseUrl(url)
+  if (!target) return null
+  const name = hostOf(target)
+  const own = parseUrl(config.appUrl)
+  if (own && name === hostOf(own) && (config.hosted || door(target) === door(own))) return 'An app cannot use the address of this workspace.'
+  if (config.hosted && isInternalHost(name)) return 'An app cannot use a private or local network address.'
+  const suffix = config.appBlockedHostSuffix
+  if (suffix && (name === suffix || name.endsWith(`.${suffix}`))) return `An app cannot use an address on ${suffix}.`
+  return null
+}
+
 function checkUrl(value: unknown, label: string): string {
   const text = typeof value === 'string' ? value.trim() : ''
   if (!text) return ''
@@ -65,6 +130,8 @@ function checkUrl(value: unknown, label: string): string {
     throw new AppError(`${label} must be a full address that starts with https://.`)
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new AppError(`${label} must start with https:// or http://.`)
+  const refusal = targetRefusal(url.toString())
+  if (refusal) throw new AppError(refusal)
   return url.toString().slice(0, 1000)
 }
 
@@ -189,7 +256,9 @@ const sample = (): ReturnType<typeof conversationPayload> => ({
 
 const sign = (secret: string, body: string) => `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`
 
-async function post(url: string, secret: string, event: string, payload: unknown): Promise<{ ok: boolean; status: number | null; detail: string; durationMs: number; text: string; contentType: string }> {
+async function post(url: string, secret: string, event: string, payload: unknown): Promise<{ ok: boolean; status: number | null; detail: string; durationMs: number; text: string; contentType: string; retry: boolean }> {
+  const refusal = targetRefusal(url)
+  if (refusal) return { ok: false, status: null, detail: refusal, durationMs: 0, text: '', contentType: '', retry: false }
   const body = JSON.stringify(payload)
   const started = Date.now()
   try {
@@ -201,11 +270,11 @@ async function post(url: string, secret: string, event: string, payload: unknown
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const text = (await res.text()).slice(0, 200_000)
-    return { ok: res.ok, status: res.status, detail: res.ok ? 'OK' : `The app answered ${res.status}. ${text.slice(0, 200)}`.trim(), durationMs: Date.now() - started, text, contentType: res.headers.get('content-type') || '' }
+    return { ok: res.ok, status: res.status, detail: res.ok ? 'OK' : `The app answered ${res.status}. ${text.slice(0, 200)}`.trim(), durationMs: Date.now() - started, text, contentType: res.headers.get('content-type') || '', retry: res.status >= 500 }
   } catch (err) {
     const e = err as Error
     const detail = e.name === 'TimeoutError' || e.name === 'AbortError' ? `No answer within ${TIMEOUT_MS / 1000} seconds.` : `Could not reach the app: ${e.message}`
-    return { ok: false, status: null, detail, durationMs: Date.now() - started, text: '', contentType: '' }
+    return { ok: false, status: null, detail, durationMs: Date.now() - started, text: '', contentType: '', retry: true }
   }
 }
 
@@ -216,7 +285,7 @@ async function post(url: string, secret: string, event: string, payload: unknown
 async function deliver(app: ReturnType<typeof serializeApp>, event: string, conversationId: number | null, payload: unknown) {
   let result = await post(app.webhookUrl, app.secret, event, payload)
   // One more try for a hiccup on the app's side. Answers like 400 or 404 are final.
-  if (!result.ok && (result.status === null || result.status >= 500)) {
+  if (result.retry) {
     await new Promise((resolve) => setTimeout(resolve, 3000))
     result = await post(app.webhookUrl, app.secret, event, payload)
   }

@@ -130,7 +130,7 @@ export const Composer = forwardRef<
   const teammates = useUsers()
   const [mention, setMention] = useState<{ from: number; to: number; query: string; left: number; bottom: number } | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
-  const candidates: User[] = mention ? (teammates.data ?? []).filter((u) => !u.disabled && u.id !== me.id && u.name.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 6) : []
+  const candidates: User[] = mention ? (teammates.data ?? []).filter((u) => !u.disabled && !u.pending && u.id !== me.id && u.name.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 6) : []
   const trackMention = (ed: NonNullable<typeof editor>) => {
     const { $from, empty } = ed.state.selection
     const match = empty && modeRef.current === 'note' ? /(?:^|\s)@([^\s@]*(?: [^\s@]*)?)$/.exec($from.parent.textBetween(0, $from.parentOffset, undefined, '\ufffc')) : null

@@ -12,7 +12,15 @@ export interface User {
   notifyReplies: boolean
   notifyMentions: boolean
   disabled: boolean
+  pending: boolean
   createdAt: number
+}
+
+export interface PlanState {
+  plan: 'trial' | 'starter' | 'team' | 'business'
+  mailboxLimit: number | null
+  readOnly: boolean
+  hourlySendLimit: number
 }
 
 export interface FolderCounts {

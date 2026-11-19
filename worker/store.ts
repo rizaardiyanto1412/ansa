@@ -15,13 +15,17 @@ import { createApp, prepareData } from '../server/app.ts'
 import { HibernatingEvents } from './live.ts'
 import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
+import type { ControlPlane, PlanState, SmtpCredential } from '../server/hosted.ts'
+import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
 import { pollAllMailboxes } from '../server/mail/imap.ts'
+import { deliverResetOutbox, nextResetAt } from '../server/services/accounts.ts'
 import { dispatchScheduled, nextScheduledAt, wakeSnoozed } from '../server/services/conversations.ts'
 import { importStatus, importStep } from '../server/services/import-helpscout.ts'
 
 export interface StoreEnv {
   /** Which upload of the code is running. The Worker and the Durable Object can briefly differ after a deploy. */
   CF_VERSION_METADATA?: { id: string; timestamp: string }
+  CONTROL?: ControlPlane
   /** "1" when a control plane runs many workspaces. Self-hosted installs never set it. */
   ANSA_HOSTED?: string
   ATTACHMENTS?: R2Bucket
@@ -122,15 +126,9 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   constructor(ctx: DurableObjectState, env: StoreEnv) {
     super(ctx, env)
-    if (env.ANSA_HOSTED === '1' && env.APP_SECRET) {
-      throw new Error('APP_SECRET is set in hosted mode. Remove it: every workspace must keep its own generated secret.')
-    }
-
-    if (env.ANSA_HOSTED === '1' && !env.ATTACHMENTS) {
-      throw new Error('ATTACHMENTS is required in hosted mode.')
-    }
-
     const config = readConfig((name) => (typeof env[name] === 'string' ? env[name] : undefined))
+    if (config.hosted && !env.ATTACHMENTS) throw new Error('ATTACHMENTS is required in hosted mode.')
+
     if (!config.secret) config.secret = storedSecret(ctx)
     if (!config.appUrlFixed) config.appUrl = ctx.storage.kv.get<string>('appUrl') ?? config.appUrl
     config.imapPollOnly = true
@@ -147,10 +145,31 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       subscribe((event) => this.live.broadcast(event))
       return createApp()
     })
+    this.tenant.control = env.CONTROL ?? null
   }
 
   protected inTenant<T>(fn: () => T): T {
     return runInTenant(this.tenant, fn)
+  }
+
+  async provision(input: ProvisionInput): Promise<{ signInUrl: string }> {
+    return this.inTenant(() => {
+      const result = provision(input)
+      this.ctx.storage.kv.put('workspaceId', input.workspaceId)
+      return result
+    })
+  }
+
+  async setPlan(planState: PlanState): Promise<void> {
+    this.inTenant(() => setPlan(planState))
+  }
+
+  async setSmtp(smtp: SmtpCredential): Promise<void> {
+    this.inTenant(() => setSmtp(smtp))
+  }
+
+  async health(): Promise<{ schemaVersion: number; coreVersion: string; mailboxes: number; users: number }> {
+    return this.inTenant(health)
   }
 
   /** Without APP_URL, links in emails use the address people actually sign in on. */
@@ -216,13 +235,15 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   protected async scheduleAlarm() {
     const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
-    const deadlines = [nextScheduledAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const deadlines = [nextScheduledAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
     const current = await this.ctx.storage.getAlarm()
     if (deadlines.length === 0) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
       return
     }
-    const at = Math.max(Date.now() + 1000, Math.min(...deadlines))
+    const floor = Date.now() + 1000
+    if (current !== null && current <= floor) return
+    const at = Math.max(floor, Math.min(...deadlines))
     if (current !== at) await this.ctx.storage.setAlarm(at)
   }
 
@@ -230,6 +251,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     await this.inTenant(async () => {
       const jobs = [
         ['wakeSnoozed', () => wakeSnoozed()],
+        ['deliverResetOutbox', () => deliverResetOutbox()],
         ['pruneSessions', () => pruneSessions()],
         ['importStep', async () => {
           try {

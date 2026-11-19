@@ -85,7 +85,7 @@ export function SettingsPage() {
 // ---------------------------------------------------------------------------------------------
 
 function ProfileSettings() {
-  const { user, refresh } = useSession()
+  const { user, refresh, passwordMin } = useSession()
   const { toast } = useFeedback()
   const [form, setForm] = useState({ name: user.name, email: user.email, signature: user.signature, notifyAssigned: user.notifyAssigned, notifyReplies: user.notifyReplies, notifyMentions: user.notifyMentions })
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' })
@@ -159,8 +159,8 @@ function ProfileSettings() {
             <Field label="Current password">
               {(id) => <Input id={id} type="password" autoComplete="current-password" required value={passwords.currentPassword} onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })} />}
             </Field>
-            <Field label="New password" hint="At least 8 characters.">
-              {(id) => <Input id={id} type="password" autoComplete="new-password" required minLength={8} value={passwords.newPassword} onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })} />}
+            <Field label="New password" hint={`At least ${passwordMin} characters.`}>
+              {(id) => <Input id={id} type="password" autoComplete="new-password" required minLength={passwordMin} value={passwords.newPassword} onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })} />}
             </Field>
           </div>
           <div className="flex justify-end">
@@ -191,7 +191,7 @@ function TeamSettings() {
         action={
           admin && (
             <Button variant="primary" icon={<Plus className="size-4" aria-hidden />} onClick={() => setEditing('new')}>
-              Add teammate
+              Invite teammate
             </Button>
           )
         }
@@ -210,7 +210,9 @@ function TeamSettings() {
                 </p>
                 <p className="truncate text-[13px] text-fg-3">{u.email}</p>
               </div>
-              <span className="text-[13px] text-fg-2">{u.disabled ? 'Deactivated' : u.role === 'admin' ? 'Admin' : 'Agent'}</span>
+              <span className="text-[13px] text-fg-2">
+                {u.disabled ? 'Deactivated' : `${u.pending ? 'Invited · ' : ''}${u.role === 'admin' ? 'Admin' : 'Agent'}`}
+              </span>
               {admin && (
                 <Button size="sm" onClick={() => setEditing(u)}>
                   Edit
@@ -228,16 +230,20 @@ function TeamSettings() {
 function TeammateForm({ user, isSelf, onClose }: { user: User | null; isSelf: boolean; onClose: () => void }) {
   const client = useQueryClient()
   const { toast } = useFeedback()
+  const { hosted, passwordMin } = useSession()
   const [form, setForm] = useState({ name: user?.name ?? '', email: user?.email ?? '', role: user?.role ?? 'agent', password: '' })
+  const [typePassword, setTypePassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const inviting = !user && !typePassword
   const done = (message: string) => {
     void client.invalidateQueries({ queryKey: ['users'] })
     toast(message)
     onClose()
   }
+  const invite = () => api.post('/invites', { email: form.email, role: form.role })
   const save = useMutation({
-    mutationFn: () => (user ? api.patch(`/users/${user.id}`, { ...form, password: form.password || undefined }) : api.post('/users', form)),
-    onSuccess: () => done(user ? 'Teammate saved' : 'Teammate added'),
+    mutationFn: () => (user ? api.patch(`/users/${user.id}`, { ...form, password: form.password || undefined }) : inviting ? invite() : api.post('/users', form)),
+    onSuccess: () => done(user ? 'Teammate saved' : inviting ? `Invite sent to ${form.email}` : 'Teammate added'),
     onError: (err: Error) => setError(err.message),
   })
   const toggle = useMutation({
@@ -245,22 +251,45 @@ function TeammateForm({ user, isSelf, onClose }: { user: User | null; isSelf: bo
     onSuccess: () => done(user!.disabled ? 'Teammate reactivated' : 'Teammate deactivated'),
     onError: (err: Error) => setError(err.message),
   })
+  const resend = useMutation({ mutationFn: invite, onSuccess: () => done(`Invite sent again to ${form.email}`), onError: (err: Error) => setError(err.message) })
+  const cancel = useMutation({ mutationFn: () => api.del(`/invites/${user!.id}`), onSuccess: () => done('Invite cancelled'), onError: (err: Error) => setError(err.message) })
+  const waiting = !!user?.pending && !user.disabled
   return (
     <Modal
       open
       onClose={onClose}
-      title={user ? `Edit ${user.name}` : 'Add a teammate'}
-      description={user ? undefined : 'Create their account, then send them the sign-in address and password.'}
+      title={user ? `Edit ${user.name}` : 'Invite a teammate'}
+      description={
+        user
+          ? waiting
+            ? 'Invited, and has not joined yet. The link in the email works for 24 hours.'
+            : undefined
+          : inviting
+            ? 'They get an email with a link to choose their name and password. The link works for 24 hours.'
+            : 'Create their account, then send them the sign-in address and password.'
+      }
       footer={
         <>
-          {user && !isSelf && (
-            <Button variant="ghost" className="mr-auto text-danger hover:text-danger" loading={toggle.isPending} onClick={() => toggle.mutate()}>
-              {user.disabled ? 'Reactivate' : 'Deactivate'}
+          {waiting ? (
+            <Button variant="ghost" className="mr-auto text-danger hover:text-danger" loading={cancel.isPending} onClick={() => cancel.mutate()}>
+              Cancel invite
+            </Button>
+          ) : (
+            user &&
+            !isSelf && (
+              <Button variant="ghost" className="mr-auto text-danger hover:text-danger" loading={toggle.isPending} onClick={() => toggle.mutate()}>
+                {user.disabled ? 'Reactivate' : 'Deactivate'}
+              </Button>
+            )
+          )}
+          {waiting && (
+            <Button loading={resend.isPending} onClick={() => resend.mutate()}>
+              Send invite again
             </Button>
           )}
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" loading={save.isPending} onClick={() => save.mutate()}>
-            {user ? 'Save changes' : 'Add teammate'}
+            {user ? 'Save changes' : inviting ? 'Send invite' : 'Add teammate'}
           </Button>
         </>
       }
@@ -273,8 +302,8 @@ function TeammateForm({ user, isSelf, onClose }: { user: User | null; isSelf: bo
         }}
       >
         {error && <Banner kind="danger">{error}</Banner>}
-        <Field label="Name">{(id) => <Input id={id} required autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />}</Field>
-        <Field label="Email">{(id) => <Input id={id} type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />}</Field>
+        {!inviting && <Field label="Name">{(id) => <Input id={id} required autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />}</Field>}
+        <Field label="Email">{(id) => <Input id={id} type="email" required autoFocus={inviting} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />}</Field>
         <Field label="Role" hint="Admins can also manage mailboxes, teammates and workflows.">
           {(id) => (
             <Select id={id} value={form.role} disabled={isSelf} onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'agent' })}>
@@ -283,9 +312,15 @@ function TeammateForm({ user, isSelf, onClose }: { user: User | null; isSelf: bo
             </Select>
           )}
         </Field>
-        <Field label={user ? 'New password' : 'Password'} hint={user ? 'Leave blank to keep their current password.' : 'At least 8 characters.'}>
-          {(id) => <Input id={id} type="password" autoComplete="new-password" required={!user} minLength={8} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />}
-        </Field>
+        {!user && !hosted && <Switch checked={typePassword} onChange={setTypePassword} label="Set their password myself" description="Use this when this install cannot send email yet." />}
+        {!inviting && !hosted && (
+          <Field
+            label={user && !waiting ? 'New password' : 'Password'}
+            hint={waiting ? 'Optional. Set one yourself when the invite email cannot reach them.' : user ? 'Leave blank to keep their current password.' : `At least ${passwordMin} characters.`}
+          >
+            {(id) => <Input id={id} type="password" autoComplete="new-password" required={!user} minLength={passwordMin} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />}
+          </Field>
+        )}
         <button type="submit" hidden />
       </form>
     </Modal>

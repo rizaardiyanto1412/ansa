@@ -1,12 +1,13 @@
 import { useEffect } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
 import { LiveContext, SessionContext, useLiveEvents, useMailboxes, useSession } from './lib/hooks'
-import type { Conversation, User } from './lib/types'
+import type { Conversation, PlanState, User } from './lib/types'
 import { Spinner } from './ui'
 import { applyWorkspace, brand, workspace, type Workspace } from './lib/workspace'
 import { Login, Setup } from './pages/Auth'
+import { ForgotPassword, LinkPage } from './pages/Account'
 import { Shell } from './Shell'
 import { InboxPage } from './inbox/InboxPage'
 import { CustomersPage } from './pages/Customers'
@@ -20,6 +21,9 @@ interface Bootstrap {
   appUrl: string
   liveTransport: 'sse' | 'websocket'
   workspace: Workspace
+  hosted: boolean
+  plan: PlanState | null
+  passwordMinLength: number
 }
 
 const Splash = () => (
@@ -29,6 +33,7 @@ const Splash = () => (
 )
 
 export function App() {
+  const { pathname, hash } = useLocation()
   const boot = useQuery({ queryKey: ['bootstrap'], queryFn: () => api.get<Bootstrap>('/bootstrap'), staleTime: Infinity, refetchOnWindowFocus: false })
   useEffect(() => {
     const onSignedOut = () => void boot.refetch()
@@ -49,10 +54,23 @@ export function App() {
   }
   // Branding and status names must be in place before anything below renders.
   applyWorkspace(boot.data.workspace)
+  // Keyed by the token: a second link opened in the same tab changes only the fragment, and must start a fresh form.
+  if (pathname === '/link') return <LinkPage key={hash} token={hash.slice(1)} passwordMin={boot.data.passwordMinLength} />
   if (boot.data.setupRequired) return <Setup onDone={() => void boot.refetch()} />
-  if (!boot.data.user) return <Login onDone={() => void boot.refetch()} />
+  if (!boot.data.user) return pathname === '/forgot' ? <ForgotPassword /> : <Login onDone={() => void boot.refetch()} />
   return (
-    <SessionContext.Provider value={{ user: boot.data.user, appUrl: boot.data.appUrl, liveTransport: boot.data.liveTransport, workspace: boot.data.workspace, refresh: () => void boot.refetch() }}>
+    <SessionContext.Provider
+      value={{
+        user: boot.data.user,
+        appUrl: boot.data.appUrl,
+        liveTransport: boot.data.liveTransport,
+        workspace: boot.data.workspace,
+        hosted: boot.data.hosted,
+        plan: boot.data.plan,
+        passwordMin: boot.data.passwordMinLength,
+        refresh: () => void boot.refetch(),
+      }}
+    >
       <Authed />
     </SessionContext.Provider>
   )

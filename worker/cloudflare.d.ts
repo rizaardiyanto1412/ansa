@@ -5,6 +5,9 @@ declare module 'cloudflare:workers' {
     protected env: Env
     constructor(ctx: DurableObjectState, env: Env)
   }
+  export class WorkerEntrypoint<Env = unknown> {
+    protected env: Env
+  }
 }
 
 interface SqlCursor {

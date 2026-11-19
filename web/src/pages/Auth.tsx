@@ -1,8 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useDocumentTitle } from '../lib/hooks'
 import { Banner, Button, Field, Input } from '../ui'
-import { brand, workspace } from '../lib/workspace'
+import { brand, place, workspace } from '../lib/workspace'
 
 /** The workspace logo when one is uploaded, otherwise the built-in mark. */
 export const Logo = ({ size = 28 }: { size?: number }) =>
@@ -17,7 +18,7 @@ export const Logo = ({ size = 28 }: { size?: number }) =>
   </svg>
   )
 
-function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+export function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
     <main className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
@@ -51,7 +52,7 @@ export function Login({ onDone }: { onDone: () => void }) {
     }
   }
   return (
-    <AuthCard title={`Sign in to ${brand()}`} subtitle="Your team's shared inbox">
+    <AuthCard title={`Sign in to ${place()}`} subtitle="Your team's shared inbox">
       <form onSubmit={submit} className="flex flex-col gap-4">
         {error && <Banner kind="danger">{error}</Banner>}
         <Field label="Email">{(id) => <Input id={id} type="email" autoComplete="username" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />}</Field>
@@ -59,6 +60,9 @@ export function Login({ onDone }: { onDone: () => void }) {
         <Button type="submit" variant="primary" size="lg" loading={busy}>
           Sign in
         </Button>
+        <Link to="/forgot" className="self-center text-[13px] font-medium text-fg-2 hover:text-fg hover:underline">
+          Forgot your password?
+        </Link>
       </form>
     </AuthCard>
   )

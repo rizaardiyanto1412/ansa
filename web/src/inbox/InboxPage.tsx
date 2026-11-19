@@ -174,7 +174,7 @@ export function InboxPage({ search = false }: { search?: boolean }) {
                 <>
                   <MenuLabel>Assign to</MenuLabel>
                   {(users.data ?? [])
-                    .filter((u) => !u.disabled)
+                    .filter((u) => !u.disabled && !u.pending)
                     // Yourself first: it is the most common choice.
                     .sort((x, y) => Number(y.id === user.id) - Number(x.id === user.id))
                     .map((u) => (

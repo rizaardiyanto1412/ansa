@@ -8,7 +8,9 @@ import { config } from './config.ts'
 import { decrypt, encrypt, hashPassword, randomToken, sha256, verifyPassword } from './crypto.ts'
 import {
   allowAttempt,
+  blockCrossSite,
   clearAttempts,
+  clientAddress,
   endSession,
   requireAdmin,
   requireAuth,
@@ -54,6 +56,9 @@ import { brandName, getWorkspace, publicWorkspace, saveWorkspace } from './servi
 import { blobs } from './blobs.ts'
 import { cancelImport, connectHelpScout, importStatus, resumeImport, startImport } from './services/import-helpscout.ts'
 import { publish } from './events.ts'
+import { hostedState } from './hosted.ts'
+import { cancelInvite, checkPassword, consumeLink, inspectLink, inviteTeammate, minPasswordLength, requestPasswordReset, voidLinks } from './services/accounts.ts'
+import { CORE_VERSION } from './services/provision.ts'
 
 export const api = new Hono<Env>()
 
@@ -81,10 +86,6 @@ const cleanSignature = (html: string) => {
   if (clean.length > 10_000) throw new AppError('That signature is too long. Remove pasted images or shorten it.')
   return clean
 }
-const checkPassword = (password: unknown) => {
-  if (typeof password !== 'string' || password.length < 8) throw new AppError('Use a password with at least 8 characters.')
-  return password
-}
 
 // JSON bodies are small. Attachments have their own, larger limit.
 api.use('*', async (c, next) => (c.req.path.endsWith('/attachments') ? next() : bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (ctx) => ctx.json({ error: 'That request is too large.' }, 413) })(c, next)))
@@ -95,13 +96,39 @@ api.onError((err, c) => {
   return c.json({ error: 'Something went wrong on the server.' }, 500)
 })
 
+const decodedPath = (path: string) => {
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
+}
+const isSetupPath = (path: string) => /^\/+api\/+setup\/*$/i.test(decodedPath(path))
+
+api.use('*', async (c, next) => {
+  if (config.hosted && isSetupPath(c.req.path)) throw new AppError('Not found.', 404)
+  return next()
+})
+
 // ---------------------------------------------------------------------------------------------
 // Public: bootstrap, setup, sign in
 // ---------------------------------------------------------------------------------------------
 
 const hasUsers = () => !!get('SELECT 1 FROM users LIMIT 1')
 
-api.get('/bootstrap', (c) => c.json({ setupRequired: !hasUsers(), user: userFromSession(c), appUrl: config.appUrl, version: '1.0.0', liveTransport: currentTenant().liveEvents.kind, workspace: publicWorkspace() }))
+api.get('/bootstrap', (c) =>
+  c.json({
+    setupRequired: !config.hosted && !hasUsers(),
+    user: userFromSession(c),
+    appUrl: config.appUrl,
+    version: CORE_VERSION,
+    liveTransport: currentTenant().liveEvents.kind,
+    workspace: publicWorkspace(),
+    hosted: config.hosted,
+    plan: hostedState()?.planState ?? null,
+    passwordMinLength: minPasswordLength(),
+  }),
+)
 
 // The workspace logo. Public, because the sign-in page shows it.
 api.get('/brand/logo', async (c) => {
@@ -130,7 +157,7 @@ api.get('/brand/manifest', (c) => {
   return new Response(JSON.stringify(manifest), { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' } })
 })
 
-api.post('/setup', async (c) => {
+api.post('/setup', blockCrossSite, async (c) => {
   if (hasUsers()) throw new AppError('Setup is already complete.', 409)
   const data = await body(c)
   const name = str(data.name, 100)
@@ -146,10 +173,10 @@ api.post('/setup', async (c) => {
   return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) })
 })
 
-api.post('/login', async (c) => {
+api.post('/login', blockCrossSite, async (c) => {
   const data = await body(c)
   const email = str(data.email, 200).toLowerCase()
-  const key = `${c.req.header('x-forwarded-for')?.split(',')[0].trim() || 'local'}:${email}`
+  const key = `login:${clientAddress(c)}:${email}`
   if (!allowAttempt(key)) throw new AppError('Too many attempts. Wait 15 minutes and try again.', 429)
   const row = get<any>('SELECT * FROM users WHERE email = ? AND disabled = 0', email)
   if (!row || typeof data.password !== 'string' || !verifyPassword(data.password, row.password_hash)) {
@@ -160,8 +187,31 @@ api.post('/login', async (c) => {
   return c.json({ user: serializeUser(row) })
 })
 
-api.post('/logout', (c) => {
+api.post('/logout', blockCrossSite, (c) => {
   endSession(c)
+  return c.json({ ok: true })
+})
+
+const limitLinkUse = (c: Parameters<typeof clientAddress>[0]) => {
+  if (!allowAttempt(`link:${clientAddress(c)}`, 100)) throw new AppError('Too many attempts. Wait 15 minutes and try again.', 429)
+}
+
+api.post('/links/inspect', blockCrossSite, async (c) => {
+  limitLinkUse(c)
+  return c.json({ link: inspectLink((await body(c)).token) })
+})
+
+api.post('/links/consume', blockCrossSite, async (c) => {
+  limitLinkUse(c)
+  const data = await body(c)
+  const id = consumeLink(data.token, { name: data.name, password: data.password })
+  startSession(c, id)
+  return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) })
+})
+
+api.post('/password/forgot', blockCrossSite, async (c) => {
+  if (!allowAttempt(`reset:from:${clientAddress(c)}`, 10, 3_600_000)) throw new AppError('Too many requests. Wait an hour and try again.', 429)
+  requestPasswordReset((await body(c)).email)
   return c.json({ ok: true })
 })
 
@@ -196,6 +246,7 @@ api.patch('/me', async (c) => {
     const row = get<any>('SELECT password_hash FROM users WHERE id = ?', user.id)
     if (typeof data.currentPassword !== 'string' || !verifyPassword(data.currentPassword, row.password_hash)) throw new AppError('Your current password is not correct.')
     run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(checkPassword(data.newPassword)), user.id)
+    voidLinks(user.id)
     signOutEverywhere(user.id, c)
   }
   return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', user.id)) })
@@ -210,6 +261,7 @@ function signOutEverywhere(userId: number, c: Parameters<typeof startSession>[0]
 api.get('/users', (c) => c.json({ users: all('SELECT * FROM users ORDER BY disabled, name').map(serializeUser) }))
 
 api.post('/users', requireAdmin, async (c) => {
+  if (config.hosted) throw new AppError('Invite teammates by email: POST /api/invites.')
   const data = await body(c)
   const name = str(data.name, 100)
   const email = str(data.email, 200)
@@ -230,6 +282,17 @@ api.post('/users', requireAdmin, async (c) => {
   return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) }, 201)
 })
 
+api.post('/invites', requireAdmin, async (c) => {
+  const data = await body(c)
+  const id = await inviteTeammate({ email: data.email, role: data.role }, c.get('user'))
+  return c.json({ user: serializeUser(get('SELECT * FROM users WHERE id = ?', id)) }, 201)
+})
+
+api.delete('/invites/:id', requireAdmin, (c) => {
+  cancelInvite(idParam(c.req.param('id')))
+  return c.json({ ok: true })
+})
+
 api.patch('/users/:id', requireAdmin, async (c) => {
   const id = idParam(c.req.param('id'))
   const target = get<any>('SELECT * FROM users WHERE id = ?', id)
@@ -237,6 +300,7 @@ api.patch('/users/:id', requireAdmin, async (c) => {
   const data = await body(c)
   const lastAdmin = () => target.role === 'admin' && !target.disabled && get<{ n: number }>(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0`)!.n <= 1
   if ((data.role === 'agent' || data.disabled === true) && lastAdmin()) throw new AppError('Keep at least one active admin.')
+  if (data.password && config.hosted) throw new AppError('Teammates choose their own password. They can use "Forgot password?" on the sign-in page.')
   if (data.name !== undefined && str(data.name, 100)) run('UPDATE users SET name = ? WHERE id = ?', str(data.name, 100), id)
   if (data.email !== undefined) {
     if (!isEmail(data.email)) throw new AppError('Enter a valid email address.')
@@ -249,6 +313,7 @@ api.patch('/users/:id', requireAdmin, async (c) => {
     // An admin reset is used when an account may be compromised: cut every session and token.
     run('DELETE FROM sessions WHERE user_id = ?', id)
     run('DELETE FROM api_tokens WHERE user_id = ?', id)
+    voidLinks(id)
     if (id === c.get('user').id) startSession(c, id)
   }
   if (typeof data.disabled === 'boolean') {
