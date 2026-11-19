@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { brand, type Workspace } from './workspace'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
@@ -7,6 +7,7 @@ import type { Mailbox, SavedReply, Tag, User, Viewer } from './types'
 export interface Session {
   user: User
   appUrl: string
+  liveTransport: 'sse' | 'websocket'
   workspace: Workspace
   refresh: () => void
 }
@@ -23,17 +24,54 @@ export const useTags = () => useQuery({ queryKey: ['tags'], queryFn: () => api.g
 export const useSavedReplies = () =>
   useQuery({ queryKey: ['saved-replies'], queryFn: () => api.get<{ savedReplies: SavedReply[] }>('/saved-replies').then((r) => r.savedReplies), staleTime: 60_000 })
 
-/** Who has which conversation open. Events keep it current; the slow refetch drops people whose tab closed. */
-export const usePresence = () =>
-  useQuery({ queryKey: ['presence-all'], queryFn: () => api.get<{ viewers: Record<number, Viewer[]> }>('/presence').then((r) => r.viewers), staleTime: 30_000, refetchInterval: 60_000 }).data ?? {}
+type SocketPresence = { conversationId: number; state: 'viewing' | 'replying' } | null
+export const LiveContext = createContext<{ socketOpen: boolean; setPresence: (presence: SocketPresence) => void }>({ socketOpen: false, setPresence: () => {} })
 
-/** Keep lists and open conversations fresh from the server's event stream. */
+export function usePresence() {
+  const { socketOpen } = useContext(LiveContext)
+  return useQuery({
+    queryKey: ['presence-all'],
+    queryFn: () => api.get<{ viewers: Record<number, Viewer[]> }>('/presence').then((r) => r.viewers),
+    staleTime: 30_000,
+    refetchInterval: socketOpen ? false : 60_000,
+  }).data ?? {}
+}
+
+export function useConversationPresence(conversationId: number, replying: boolean) {
+  const { liveTransport } = useSession()
+  const { setPresence } = useContext(LiveContext)
+  useEffect(() => {
+    if (liveTransport === 'websocket') {
+      setPresence({ conversationId, state: replying ? 'replying' : 'viewing' })
+      return () => setPresence(null)
+    }
+    const ping = () => void api.post(`/conversations/${conversationId}/presence`, { state: replying ? 'replying' : 'viewing' }).catch(() => {})
+    ping()
+    const timer = setInterval(ping, 20_000)
+    return () => clearInterval(timer)
+  }, [conversationId, replying, liveTransport, setPresence])
+  useEffect(() => () => {
+    if (liveTransport === 'sse') void api.del(`/conversations/${conversationId}/presence`).catch(() => {})
+  }, [conversationId, liveTransport])
+}
+
 export function useLiveEvents() {
   const client = useQueryClient()
+  const { liveTransport } = useSession()
+  const socket = useRef<WebSocket | null>(null)
+  const presence = useRef<SocketPresence>(null)
+  const [socketOpen, setSocketOpen] = useState(false)
+  const setPresence = useCallback((next: SocketPresence) => {
+    presence.current = next
+    if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: 'presence', presence: next }))
+  }, [])
   useEffect(() => {
-    let source: EventSource | null = null
+    let source: EventSource | WebSocket | null = null
     let retry: ReturnType<typeof setTimeout> | undefined
+    let ping: ReturnType<typeof setInterval> | undefined
     let closed = false
+    let delay = 1000
+    let awaitingPong = false
     let pending: ReturnType<typeof setTimeout> | undefined
     const refreshLists = () => {
       if (pending) return
@@ -43,46 +81,82 @@ export function useLiveEvents() {
         void client.invalidateQueries({ queryKey: ['mailboxes'] })
       }, 150)
     }
-    const connect = () => {
-      if (closed || source || document.visibilityState === 'hidden') return
-      source = new EventSource('/api/events')
-      source.onmessage = (message) => {
-        let event: any
-        try {
-          event = JSON.parse(message.data)
-        } catch {
-          return
-        }
-        if (event.type === 'conversation') {
-          refreshLists()
-          void client.invalidateQueries({ queryKey: ['conversation', event.id] })
-          if (event.reason === 'created' || event.reason === 'customer_reply') window.dispatchEvent(new CustomEvent('ansa:incoming', { detail: event }))
-        } else if (event.type === 'presence') {
-          client.setQueryData(['presence', event.conversationId], event.viewers as Viewer[])
-          client.setQueryData(['presence-all'], (old: Record<number, Viewer[]> | undefined) => ({ ...old, [event.conversationId]: event.viewers as Viewer[] }))
-        } else if (event.type === 'mailbox') {
-          void client.invalidateQueries({ queryKey: ['mailboxes'] })
-        } else if (event.type === 'refresh' && event.scope === 'workspace') {
-          // An admin changed branding or features: reload them for everyone who is signed in.
-          void client.invalidateQueries({ queryKey: ['bootstrap'] })
-        } else if (event.type === 'hello') {
-          refreshLists()
-          void client.invalidateQueries({ queryKey: ['presence-all'] })
-        }
+    const onMessage = (message: MessageEvent) => {
+      if (message.data === 'pong') {
+        awaitingPong = false
+        return
       }
-      source.onerror = () => {
-        disconnect()
-        if (!closed) retry = setTimeout(connect, 4000)
+      let event: any
+      try {
+        event = JSON.parse(message.data)
+      } catch {
+        return
+      }
+      if (event.type === 'conversation') {
+        refreshLists()
+        void client.invalidateQueries({ queryKey: ['conversation', event.id] })
+        if (event.reason === 'created' || event.reason === 'customer_reply') window.dispatchEvent(new CustomEvent('ansa:incoming', { detail: event }))
+      } else if (event.type === 'presence') {
+        client.setQueryData(['presence', event.conversationId], event.viewers as Viewer[])
+        client.setQueryData(['presence-all'], (old: Record<number, Viewer[]> | undefined) => ({ ...old, [event.conversationId]: event.viewers as Viewer[] }))
+      } else if (event.type === 'mailbox') {
+        void client.invalidateQueries({ queryKey: ['mailboxes'] })
+      } else if (event.type === 'refresh' && event.scope === 'workspace') {
+        void client.invalidateQueries({ queryKey: ['bootstrap'] })
+      } else if (event.type === 'hello') {
+        delay = 1000
+        setPresence(presence.current)
+        void client.invalidateQueries()
       }
     }
     const disconnect = () => {
-      source?.close()
+      if (source) {
+        source.onmessage = null
+        source.onerror = null
+        if (source instanceof WebSocket) source.onclose = null
+        source.close()
+      }
       source = null
+      socket.current = null
+      setSocketOpen(false)
       clearTimeout(retry)
+      clearInterval(ping)
+      awaitingPong = false
     }
-    // A hidden tab gives its connection back. Browsers allow only six per site over plain HTTP,
-    // so many open tabs would otherwise starve each other. Reconnecting refreshes everything.
+    const reconnect = () => {
+      disconnect()
+      if (closed) return
+      retry = setTimeout(connect, delay + Math.random() * delay * 0.25)
+      delay = Math.min(delay * 2, 30_000)
+    }
+    const connect = () => {
+      if (closed || source || (liveTransport === 'sse' && document.visibilityState === 'hidden')) return
+      if (liveTransport === 'websocket') {
+        const url = new URL('/api/events', location.href)
+        url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const ws = new WebSocket(url)
+        source = ws
+        socket.current = ws
+        ws.onopen = () => {
+          setSocketOpen(true)
+          ping = setInterval(() => {
+            if (awaitingPong) return ws.close()
+            if (ws.readyState === WebSocket.OPEN) {
+              awaitingPong = true
+              ws.send('ping')
+            }
+          }, 30_000)
+        }
+        ws.onclose = (event) => {
+          if (event.code === 1008) window.dispatchEvent(new Event('ansa:signed-out'))
+          reconnect()
+        }
+      } else source = new EventSource('/api/events')
+      source.onmessage = onMessage
+      source.onerror = reconnect
+    }
     const onVisibility = () => {
+      if (liveTransport === 'websocket') return
       if (document.visibilityState === 'hidden') disconnect()
       else {
         connect()
@@ -92,17 +166,19 @@ export function useLiveEvents() {
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('pagehide', disconnect)
     window.addEventListener('pageshow', connect)
+    window.addEventListener('online', connect)
     connect()
     return () => {
       closed = true
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('pagehide', disconnect)
       window.removeEventListener('pageshow', connect)
-      source?.close()
-      clearTimeout(retry)
+      window.removeEventListener('online', connect)
+      disconnect()
       clearTimeout(pending)
     }
-  }, [client])
+  }, [client, liveTransport, setPresence])
+  return { socketOpen, setPresence }
 }
 
 const isTyping = (target: EventTarget | null) => {

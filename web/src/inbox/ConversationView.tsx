@@ -28,7 +28,7 @@ import {
 } from 'lucide-react'
 import { api, qs } from '../lib/api'
 import { fileSize, fullTime, messageTime, STATUS_LABEL } from '../lib/format'
-import { useDebounced, useDocumentTitle, useHotkeys, useMailboxes, useSession, useTags, useUsers } from '../lib/hooks'
+import { useConversationPresence, useDebounced, useDocumentTitle, useHotkeys, useMailboxes, useSession, useTags, useUsers } from '../lib/hooks'
 import type { Attachment, Conversation, ConversationSummary, Status, Thread, Viewer } from '../lib/types'
 import { Avatar, Button, EmptyState, PresenceAvatars, Input, MenuDivider, MenuItem, MenuLabel, Modal, Popover, Spinner, StatusBadge, cx, useFeedback } from '../ui'
 import { Composer, type ComposerHandle } from './Composer'
@@ -67,19 +67,7 @@ export function ConversationView({ id, onBack, onDone }: { id: number; onBack: (
   const viewers = (livePresence.data ?? query.data?.viewers ?? []).filter((v) => v.userId !== user.id)
   useDocumentTitle(conversation?.subject ?? '')
 
-  // Tell teammates we are here, and whether we are writing a reply.
-  useEffect(() => {
-    const ping = () => void api.post(`/conversations/${id}/presence`, { state: typing ? 'replying' : 'viewing' }).catch(() => {})
-    ping()
-    const timer = setInterval(ping, 20_000)
-    return () => clearInterval(timer)
-  }, [id, typing])
-  useEffect(
-    () => () => {
-      void api.del(`/conversations/${id}/presence`).catch(() => {})
-    },
-    [id],
-  )
+  useConversationPresence(id, typing)
 
   const update = useMutation({
     mutationFn: (patch: Patch) => api.patch<{ conversation: Conversation }>(`/conversations/${id}`, patch),

@@ -6,7 +6,8 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { BlobStore } from './blobs.ts'
 import type { Config } from './config.ts'
 import type { Driver } from './db.ts'
-import type { Listener, PresenceEntry } from './events.ts'
+import type { Listener, PresenceEntry, Viewer } from './events.ts'
+import type { User } from './auth.ts'
 import type { MailboxWorker } from './mail/imap.ts'
 
 export interface Tenant {
@@ -15,6 +16,7 @@ export interface Tenant {
   blobs: BlobStore
   txDepth: number
   keyCache: { secret: string; key: Buffer } | null
+  liveEvents: { kind: 'sse' } | { kind: 'websocket'; connect: (user: User, credential: { kind: 'session' | 'token'; hash: string }) => Response; viewers: () => Record<number, Viewer[]> }
   listeners: Set<Listener>
   presence: Map<number, Map<number, PresenceEntry>>
   autoReplyLog: Map<string, number>
@@ -28,6 +30,7 @@ export function createTenant(init: Pick<Tenant, 'config' | 'db' | 'blobs'>): Ten
     ...init,
     txDepth: 0,
     keyCache: null,
+    liveEvents: { kind: 'sse' },
     listeners: new Set(),
     presence: new Map(),
     autoReplyLog: new Map(),

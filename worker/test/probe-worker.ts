@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { get, getSetting, run } from '../../server/db.ts'
 import { addReply, createConversation } from '../../server/services/conversations.ts'
 import { interleavings, openSealed, probe } from '../../server/test/tenant-probe.ts'
+import { publish } from '../../server/events.ts'
 import { AnsaStore, type StoreEnv } from '../store.ts'
 
 interface Env extends StoreEnv {
@@ -20,10 +21,47 @@ function scheduleDueReply(): number {
 const failure = (err: unknown) => new Response(err instanceof Error ? err.stack || err.message : String(err), { status: 500 })
 
 export class ProbeStore extends AnsaStore {
+  constructor(ctx: DurableObjectState, env: StoreEnv) {
+    const interval = globalThis.setInterval
+    const timeout = globalThis.setTimeout
+    let timers = 0
+    globalThis.setInterval = Object.assign((...args: Parameters<typeof interval>) => {
+      timers++
+      return interval(...args)
+    }, interval)
+    globalThis.setTimeout = Object.assign((...args: Parameters<typeof timeout>) => {
+      timers++
+      return timeout(...args)
+    }, timeout)
+    try {
+      super(ctx, env)
+    } finally {
+      globalThis.setInterval = interval
+      globalThis.setTimeout = timeout
+    }
+    ctx.storage.kv.put('test:constructorTimers', (ctx.storage.kv.get<number>('test:constructorTimers') ?? 0) + timers)
+    ctx.storage.kv.put('test:constructors', (ctx.storage.kv.get<number>('test:constructors') ?? 0) + 1)
+  }
+
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    this.ctx.storage.kv.put('test:messages', (this.ctx.storage.kv.get<number>('test:messages') ?? 0) + 1)
+    return super.webSocketMessage(socket, message)
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     try {
       switch (url.pathname) {
+        case '/__schedule': {
+          await this.inTenant(() => this.scheduleAlarm())
+          return Response.json({ alarm: await this.ctx.storage.getAlarm() })
+        }
+        case '/__lifecycle':
+          return Response.json({ constructors: this.ctx.storage.kv.get('test:constructors'), messages: this.ctx.storage.kv.get('test:messages') ?? 0, constructorTimers: this.ctx.storage.kv.get('test:constructorTimers') ?? 0, alarm: await this.ctx.storage.getAlarm() })
+        case '/__notify':
+          this.inTenant(() => publish({ type: 'refresh', scope: url.searchParams.get('scope') ?? 'test' }))
+          return Response.json({ ok: true })
+
         case '/__probe': {
           const bus = new EventEmitter()
           const pump = setInterval(() => bus.emit('tick'), 1)
