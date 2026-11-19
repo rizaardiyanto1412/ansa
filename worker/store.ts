@@ -241,7 +241,9 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       if (current !== null) await this.ctx.storage.deleteAlarm()
       return
     }
-    const at = Math.max(Date.now() + 1000, Math.min(...deadlines))
+    const floor = Date.now() + 1000
+    if (current !== null && current <= floor) return
+    const at = Math.max(floor, Math.min(...deadlines))
     if (current !== at) await this.ctx.storage.setAlarm(at)
   }
 

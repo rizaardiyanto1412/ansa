@@ -121,3 +121,21 @@ test('a reset request is kept in the outbox and the alarm delivers it once', asy
   const sent = (await call('GET', '/__sent')).data as { workspaceId: string; to: string; subject: string }[]
   assert.deepEqual(sent.map((mail) => ({ workspaceId: mail.workspaceId, to: mail.to, subject: mail.subject })), [{ workspaceId: 'acme', to: 'ada@acme.test', subject: 'Reset your password for Acme Support' }], 'CONTROL.sendSystemEmail ran once, for the teammate only')
 })
+
+test('steady traffic does not postpone an overdue reset delivery', async () => {
+  const before = (await call('GET', '/__sent')).data.length
+  assert.equal((await call('POST', '/api/password/forgot', { email: 'bo@acme.test' })).status, 200)
+  const start = Date.now()
+  let requests = 0
+  let delivered = false
+  while (!delivered && Date.now() - start < 6000) {
+    assert.equal((await call('GET', '/api/bootstrap')).status, 200)
+    requests++
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    delivered = (await call('GET', '/__sent')).data.length > before
+  }
+  const elapsed = Date.now() - start
+  assert.ok(delivered, `the reset email went out while ${requests} requests kept arriving`)
+  assert.ok(elapsed < 2500, `delivery took ${elapsed} ms with traffic every 200 ms`)
+  assert.ok(requests >= 3, `traffic continued during the wait: ${requests} requests`)
+})

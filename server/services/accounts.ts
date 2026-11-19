@@ -145,7 +145,6 @@ const RESET_TRIES = 5
 const RESET_LEASE = 5 * 60_000
 const resetRetryDelay = (tries: number) => Math.min(HOUR, 30_000 * 4 ** (tries - 1))
 
-// The same work for every address: the lookup happens later, when the outbox is delivered.
 export function requestPasswordReset(emailRaw: unknown) {
   if (!isEmail(emailRaw)) return
   const email = normEmail(emailRaw)
