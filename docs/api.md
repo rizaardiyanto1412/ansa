@@ -61,5 +61,7 @@ curl https://your-domain/api/conversations?folder=open \
 | `POST /api/conversations/:id/merge` | `intoId` |
 | `GET /api/customers`, `GET/PATCH /api/customers/:id` | Customers |
 | `GET /api/tags`, `/api/saved-replies`, `/api/users`, `/api/mailboxes` | Reference data |
+| `POST /api/invites` | Admins. `email`, `role` (`agent`, `admin`). Emails a one-time link. Send it again to re-send |
+| `DELETE /api/invites/:id` | Admins. Cancel an invite that has not been accepted |
 | `GET /api/reports` | Query: `from`, `to` (ms), `mailbox`, `tz` |
 | `POST /api/attachments` | Multipart `file`. Returns an id for `attachmentIds` |

@@ -2,12 +2,15 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { brand, type Workspace } from './workspace'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
-import type { Mailbox, SavedReply, Tag, User, Viewer } from './types'
+import type { Mailbox, PlanState, SavedReply, Tag, User, Viewer } from './types'
 
 export interface Session {
   user: User
   appUrl: string
   workspace: Workspace
+  hosted: boolean
+  plan: PlanState | null
+  passwordMin: number
   refresh: () => void
 }
 export const SessionContext = createContext<Session | null>(null)

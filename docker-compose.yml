@@ -13,6 +13,7 @@ services:
       APP_URL: ${APP_URL:-http://localhost:3000}
       IMAP_POLL_SECONDS: ${IMAP_POLL_SECONDS:-60}
       MAX_ATTACHMENT_MB: ${MAX_ATTACHMENT_MB:-25}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
     volumes:
       - ansa-data:/data
     ports:

@@ -21,6 +21,9 @@ export interface Config {
   /** Set to "1" to disable all outgoing/incoming mail (used by the demo seed). */
   mailDisabled: boolean
   isProd: boolean
+  hosted: boolean
+  trustProxy: boolean
+  appBlockedHostSuffix: string
 }
 
 /** Settings from one install's environment. No side effects: the platform completes `secret` and `appUrl`. */
@@ -29,6 +32,7 @@ export function readConfig(env: (name: string) => string | undefined): Config {
   const port = Number(env('PORT') || 3000)
   const configuredUrl = (env('APP_URL') || '').replace(/\/+$/, '')
   const secret = env('APP_SECRET') || ''
+  const hosted = env('ANSA_HOSTED') === '1'
   return {
     port,
     host: env('HOST') || '0.0.0.0',
@@ -36,13 +40,16 @@ export function readConfig(env: (name: string) => string | undefined): Config {
     attachmentsDir: path.join(dataDir, 'attachments'),
     dbPath: path.join(dataDir, 'ansa.db'),
     appUrl: configuredUrl || `http://localhost:${port}`,
-    appUrlFixed: configuredUrl !== '',
+    appUrlFixed: configuredUrl !== '' || hosted,
     secret: secret.length >= 16 ? secret : '',
     imapPollSeconds: Number(env('IMAP_POLL_SECONDS') || 60),
     imapPollOnly: false,
     maxAttachmentBytes: Number(env('MAX_ATTACHMENT_MB') || 25) * 1024 * 1024,
     mailDisabled: env('MAIL_DISABLED') === '1',
     isProd: env('NODE_ENV') === 'production',
+    hosted,
+    trustProxy: env('TRUST_PROXY') === '1',
+    appBlockedHostSuffix: (env('APP_BLOCKED_HOST_SUFFIX') || '').trim().toLowerCase().replace(/^\*?\.+/, '').replace(/\.+$/, ''),
   }
 }
 

@@ -55,6 +55,32 @@ const rowOf = (id: number) => {
 export const listApps = () => all<AppRow>('SELECT * FROM apps ORDER BY name').map(serializeApp)
 export const getApp = (id: number) => serializeApp(rowOf(id))
 
+const parseUrl = (url: string) => {
+  try {
+    return new URL(url)
+  } catch {
+    return null
+  }
+}
+
+// Ports 80 and 443 are one door: the same site usually answers on both.
+const door = (url: URL) => url.port || 'web'
+
+/**
+ * An app that points back at the workspace, or at a neighbour on the hosted domain, would make Ansa
+ * send requests the app's owner could not send. Another port on the same machine is a different server.
+ */
+export function targetRefusal(url: string): string | null {
+  const target = parseUrl(url)
+  if (!target) return null
+  const name = target.hostname.toLowerCase().replace(/\.$/, '')
+  const own = parseUrl(config.appUrl)
+  if (own && name === own.hostname.toLowerCase() && door(target) === door(own)) return 'An app cannot use the address of this workspace.'
+  const suffix = config.appBlockedHostSuffix
+  if (suffix && (name === suffix || name.endsWith(`.${suffix}`))) return `An app cannot use an address on ${suffix}.`
+  return null
+}
+
 function checkUrl(value: unknown, label: string): string {
   const text = typeof value === 'string' ? value.trim() : ''
   if (!text) return ''
@@ -65,6 +91,8 @@ function checkUrl(value: unknown, label: string): string {
     throw new AppError(`${label} must be a full address that starts with https://.`)
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new AppError(`${label} must start with https:// or http://.`)
+  const refusal = targetRefusal(url.toString())
+  if (refusal) throw new AppError(refusal)
   return url.toString().slice(0, 1000)
 }
 
@@ -189,7 +217,9 @@ const sample = (): ReturnType<typeof conversationPayload> => ({
 
 const sign = (secret: string, body: string) => `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`
 
-async function post(url: string, secret: string, event: string, payload: unknown): Promise<{ ok: boolean; status: number | null; detail: string; durationMs: number; text: string; contentType: string }> {
+async function post(url: string, secret: string, event: string, payload: unknown): Promise<{ ok: boolean; status: number | null; detail: string; durationMs: number; text: string; contentType: string; retry: boolean }> {
+  const refusal = targetRefusal(url)
+  if (refusal) return { ok: false, status: null, detail: refusal, durationMs: 0, text: '', contentType: '', retry: false }
   const body = JSON.stringify(payload)
   const started = Date.now()
   try {
@@ -201,11 +231,11 @@ async function post(url: string, secret: string, event: string, payload: unknown
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const text = (await res.text()).slice(0, 200_000)
-    return { ok: res.ok, status: res.status, detail: res.ok ? 'OK' : `The app answered ${res.status}. ${text.slice(0, 200)}`.trim(), durationMs: Date.now() - started, text, contentType: res.headers.get('content-type') || '' }
+    return { ok: res.ok, status: res.status, detail: res.ok ? 'OK' : `The app answered ${res.status}. ${text.slice(0, 200)}`.trim(), durationMs: Date.now() - started, text, contentType: res.headers.get('content-type') || '', retry: res.status >= 500 }
   } catch (err) {
     const e = err as Error
     const detail = e.name === 'TimeoutError' || e.name === 'AbortError' ? `No answer within ${TIMEOUT_MS / 1000} seconds.` : `Could not reach the app: ${e.message}`
-    return { ok: false, status: null, detail, durationMs: Date.now() - started, text: '', contentType: '' }
+    return { ok: false, status: null, detail, durationMs: Date.now() - started, text: '', contentType: '', retry: true }
   }
 }
 
@@ -216,7 +246,7 @@ async function post(url: string, secret: string, event: string, payload: unknown
 async function deliver(app: ReturnType<typeof serializeApp>, event: string, conversationId: number | null, payload: unknown) {
   let result = await post(app.webhookUrl, app.secret, event, payload)
   // One more try for a hiccup on the app's side. Answers like 400 or 404 are final.
-  if (!result.ok && (result.status === null || result.status >= 500)) {
+  if (result.retry) {
     await new Promise((resolve) => setTimeout(resolve, 3000))
     result = await post(app.webhookUrl, app.secret, event, payload)
   }

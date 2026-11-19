@@ -17,7 +17,7 @@ Open `https://your-domain`. The first visit asks you to create the admin account
 
 Caddy gets and renews the HTTPS certificate for you. Ports 80 and 443 must be open.
 
-**Already have a reverse proxy** (nginx, Traefik, Cloudflare Tunnel)? Skip the profile and point your proxy at port 3000:
+**Already have a reverse proxy** (nginx, Traefik, Cloudflare Tunnel)? Skip the profile and point your proxy at port 3000. Keep `TRUST_PROXY=1` only when the proxy sets `X-Forwarded-For` itself:
 
 ```bash
 docker compose up -d --build   # serves http://127.0.0.1:3000
@@ -36,6 +36,12 @@ git pull && docker compose --profile https up -d --build
 ```
 
 Database changes apply by themselves on start.
+
+### Teammates and passwords
+
+Invite teammates in **Settings → Team**. Ansa emails each one a link to choose a name and a password. Anyone can use **Forgot your password?** on the sign-in page to get a link by email. Links work once, for 24 hours.
+
+These emails go out through the SMTP server of your first mailbox. Until a mailbox is connected, switch on **Set their password myself** when you add a teammate.
 
 ### Back up
 
@@ -122,6 +128,7 @@ Set these in `.env` (Docker) or the environment.
 | `APP_SECRET` | generated into `DATA_DIR/secret.key` | Key that encrypts saved mail passwords |
 | `IMAP_POLL_SECONDS` | `60` | Fallback check interval. New mail usually arrives instantly through IMAP IDLE |
 | `MAX_ATTACHMENT_MB` | `25` | Upload limit per file |
+| `TRUST_PROXY` | off | Set to `1` behind a reverse proxy that sets `X-Forwarded-For`, so sign-in limits count each visitor. Without it, Ansa counts the address that connects to it |
 
 Mailboxes, teammates and everything else are set up in the app.
 

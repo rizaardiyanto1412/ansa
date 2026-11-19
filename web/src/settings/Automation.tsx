@@ -194,7 +194,7 @@ function WorkflowForm({ workflow, onClose }: { workflow: Workflow | null; onClos
   const remove = useMutation({ mutationFn: () => api.del(`/workflows/${workflow!.id}`), onSuccess: () => done('Workflow deleted') })
   const setCondition = (i: number, patch: Partial<WorkflowCondition>) => setForm((f) => ({ ...f, conditions: f.conditions.map((c, n) => (n === i ? { ...c, ...patch } : c)) }))
   const setAction = (i: number, patch: Partial<WorkflowAction>) => setForm((f) => ({ ...f, actions: f.actions.map((a, n) => (n === i ? { ...a, ...patch } : a)) }))
-  const activeUsers = (users.data ?? []).filter((u) => !u.disabled)
+  const activeUsers = (users.data ?? []).filter((u) => !u.disabled && !u.pending)
 
   return (
     <Modal

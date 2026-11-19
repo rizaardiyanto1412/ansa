@@ -3,6 +3,7 @@
  * Everything here is off or empty by default.
  */
 import { getSetting, setSetting } from '../db.ts'
+import { hostedState } from '../hosted.ts'
 
 export interface WorkspaceSettings {
   /** Shown instead of "Ansa" in the app, on the sign-in page and in notification emails. Empty means Ansa. */
@@ -33,6 +34,7 @@ export const brandName = () => getWorkspace().brandName || 'Ansa'
 export function publicWorkspace() {
   const w = getWorkspace()
   return {
+    name: hostedState()?.workspaceName ?? '',
     brandName: w.brandName,
     logoUrl: w.logo ? `/api/brand/logo?v=${w.logo.version}` : null,
     mentions: w.mentions,

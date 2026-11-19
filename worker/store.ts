@@ -12,6 +12,8 @@ import type { BlobStore } from '../server/blobs.ts'
 import { createTenant, runInTenant, type Tenant } from '../server/tenant.ts'
 import { createApp, prepareData, startTimers } from '../server/app.ts'
 import { pruneSessions } from '../server/auth.ts'
+import type { ControlPlane, PlanState, SmtpCredential } from '../server/hosted.ts'
+import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
 import { pollAllMailboxes } from '../server/mail/imap.ts'
 import { dispatchScheduled, nextScheduledAt, wakeSnoozed } from '../server/services/conversations.ts'
 import { importIsRunning, importStep } from '../server/services/import-helpscout.ts'
@@ -19,6 +21,7 @@ import { importIsRunning, importStep } from '../server/services/import-helpscout
 export interface StoreEnv {
   /** Which upload of the code is running. The Worker and the Durable Object can briefly differ after a deploy. */
   CF_VERSION_METADATA?: { id: string; timestamp: string }
+  CONTROL?: ControlPlane
   /** "1" when a control plane runs many workspaces. Self-hosted installs never set it. */
   ANSA_HOSTED?: string
   [name: string]: unknown
@@ -102,11 +105,28 @@ export class AnsaStore extends DurableObject<StoreEnv> {
       startTimers()
       return createApp()
     })
+    this.tenant.control = env.CONTROL ?? null
   }
 
   /** Every way into this object (fetch, alarm, RPC methods) does its work through here. */
   protected inTenant<T>(fn: () => T): T {
     return runInTenant(this.tenant, fn)
+  }
+
+  async provision(input: ProvisionInput): Promise<{ signInUrl: string }> {
+    return this.inTenant(() => provision(input))
+  }
+
+  async setPlan(planState: PlanState): Promise<void> {
+    this.inTenant(() => setPlan(planState))
+  }
+
+  async setSmtp(smtp: SmtpCredential): Promise<void> {
+    this.inTenant(() => setSmtp(smtp))
+  }
+
+  async health(): Promise<{ schemaVersion: number; coreVersion: string; mailboxes: number; users: number }> {
+    return this.inTenant(health)
   }
 
   /** Without APP_URL, links in emails use the address people actually sign in on. */

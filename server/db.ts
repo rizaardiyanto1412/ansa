@@ -308,11 +308,31 @@ const migrations: string[] = [
   ALTER TABLE drafts_by_kind RENAME TO drafts;
   `,
   `ALTER TABLE api_tokens ADD COLUMN access TEXT NOT NULL DEFAULT 'full';`,
+  `
+  CREATE TABLE one_time_links (
+    id INTEGER PRIMARY KEY,
+    purpose TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX one_time_links_user ON one_time_links(user_id, purpose);
+  CREATE TABLE attempts (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    reset_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE INDEX attempts_reset ON attempts(reset_at);
+  `,
 ]
+
+export const schemaVersion = () => get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0
 
 export function migrate() {
   use().exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)')
-  const applied = (get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0)
+  const applied = schemaVersion()
   for (let i = applied; i < migrations.length; i++) {
     tx(() => {
       use().exec(migrations[i])

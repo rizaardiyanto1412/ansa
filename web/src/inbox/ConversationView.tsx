@@ -378,7 +378,7 @@ function Header({
           {(close) => (
             <>
               {(users.data ?? [])
-                .filter((u) => !u.disabled)
+                .filter((u) => !u.disabled && !u.pending)
                 .map((u) => (
                   <MenuItem
                     key={u.id}
