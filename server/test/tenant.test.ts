@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { config, readConfig } from '../config.ts'
 import { get, getSetting, migrate } from '../db.ts'
+import { decrypt, encrypt } from '../crypto.ts'
 import { bindTenant, runInTenant } from '../tenant.ts'
 import { openNodeTenant } from '../tenant-node.ts'
 import { interleavings, openSealed, probe } from './tenant-probe.ts'
@@ -45,6 +46,14 @@ test('work outside a workspace fails instead of reaching one', () => {
   assert.throws(() => get('SELECT 1'), /No workspace is active/, 'a query')
   assert.throws(() => config.appUrl, /No workspace is active/, 'a setting')
   assert.throws(() => bindTenant(() => {}), /No workspace is active/, 'binding a callback')
+})
+
+test('decrypting outside a workspace throws, and invalid ciphertext inside one gives an empty string', () => {
+  const sealed = runInTenant(a.tenant, () => encrypt('hunter2'))
+  assert.throws(() => decrypt(sealed), /No workspace is active/, 'valid ciphertext outside a workspace')
+  assert.equal(runInTenant(a.tenant, () => decrypt(sealed)), 'hunter2', 'valid ciphertext inside the workspace')
+  assert.equal(runInTenant(a.tenant, () => decrypt('v1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAA')), '', 'invalid ciphertext')
+  assert.equal(runInTenant(b.tenant, () => decrypt(sealed)), '', "another workspace's key")
 })
 
 test('a bound callback returns to its own workspace wherever it is called from', () => {

@@ -58,6 +58,13 @@ test('work outside a workspace fails on Workers, where there is no fallback', as
   assert.match(await response.text(), /No workspace is active/)
 })
 
+test('decrypting outside a workspace throws on Workers, and invalid ciphertext inside one gives an empty string', async () => {
+  const response = await harness.fetch('http://a.example.test/__decrypt-outside')
+  assert.equal(response.status, 500)
+  assert.match(await response.text(), /No workspace is active/, 'valid ciphertext outside a workspace')
+  assert.equal((await call<{ opened: string }>('a', '/__decrypt-invalid')).opened, '', 'invalid ciphertext inside a workspace')
+})
+
 test('hosted mode refuses to start with a shared APP_SECRET', async () => {
   const start = (vars: Record<string, string>) => harness.update({ workers: [{ configPath, vars }] })
   try {
