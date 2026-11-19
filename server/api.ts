@@ -466,7 +466,6 @@ api.patch('/mailboxes/:id', requireAdmin, async (c) => {
 
 api.delete('/mailboxes/:id', requireAdmin, async (c) => {
   const id = idParam(c.req.param('id'))
-  // First, so mail stops arriving for a mailbox that is about to disappear.
   if (get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', id)?.kind === 'managed') await releaseInboundAddress(id)
   const files = all<{ storage_key: string }>(
     'SELECT a.storage_key FROM attachments a JOIN threads t ON t.id = a.thread_id JOIN conversations c ON c.id = t.conversation_id WHERE c.mailbox_id = ?',
@@ -710,8 +709,8 @@ api.delete('/conversations/:id/presence', (c) => {
 
 api.get('/threads/:id/full', (c) => c.json({ html: getQuotedHtml(idParam(c.req.param('id'))) }))
 
-api.post('/threads/:id/retry', (c) => {
-  retryDelivery(idParam(c.req.param('id')), actorOf(c))
+api.post('/threads/:id/retry', async (c) => {
+  retryDelivery(idParam(c.req.param('id')), actorOf(c), (await body(c)).confirm === true)
   return c.json({ ok: true })
 })
 

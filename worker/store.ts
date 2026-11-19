@@ -17,7 +17,7 @@ import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
 import { rpcError, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
 import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
-import { checkDueDomains, ingestInbound, nextDomainCheckAt, noteBounce, setSendingDomain } from '../server/services/managed.ts'
+import { ingestInbound, noteBounce, setSendingDomain } from '../server/services/managed.ts'
 import { exportArchive } from '../server/services/export.ts'
 import { pollAllMailboxes, stopAllMailboxes } from '../server/mail/imap.ts'
 import { dispatchQueued, nextRetryAt } from '../server/mail/outbound.ts'
@@ -203,7 +203,6 @@ export class AnsaStore extends DurableObject<StoreEnv> {
     return workspaceId
   }
 
-  // The control plane lists every workspace's versions and counts, so it hears when one of them changes.
   private reportHealth() {
     const control = this.env.CONTROL
     const workspaceId = this.tenant.workspaceId
@@ -256,8 +255,8 @@ export class AnsaStore extends DurableObject<StoreEnv> {
   private async inboundBytes(input: { raw?: ArrayBuffer; r2Key?: string }): Promise<Uint8Array> {
     if (input.raw instanceof ArrayBuffer) return new Uint8Array(input.raw)
     if (typeof input.r2Key !== 'string' || !this.env.ATTACHMENTS) throw rpcError('Invalid', 'Pass the message as raw bytes or as an R2 key.')
-    // The bucket also holds other workspaces' files. A key may name queued inbound mail or this workspace's own objects, nothing else.
-    if (!input.r2Key.startsWith('inbound/') && !input.r2Key.startsWith(`ws/${this.hostedWorkspaceId()}/`)) throw rpcError('Invalid', 'That R2 key is not inbound mail for this workspace.')
+    const workspaceId = this.hostedWorkspaceId()
+    if (!input.r2Key.startsWith(`inbound/${workspaceId}/`) && !input.r2Key.startsWith(`ws/${workspaceId}/`)) throw rpcError('Invalid', 'That R2 key is not inbound mail for this workspace.')
     const object = await this.env.ATTACHMENTS.get(input.r2Key)
     if (!object) throw rpcError('NotFound', 'No message is stored under that R2 key.')
     return new Uint8Array(await object.arrayBuffer())
@@ -299,10 +298,8 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   async deleteWorkspace(): Promise<void> {
     if (!this.tenant.config.hosted) throw rpcError('Invalid', 'This install is not in hosted mode.')
-    const workspaceId = this.ctx.storage.kv.get<string>('workspaceId')
     for (const socket of this.ctx.getWebSockets()) socket.close(1001, 'This workspace was deleted.')
     await this.inTenant(stopAllMailboxes)
-    if (workspaceId && this.env.ATTACHMENTS) await removePrefix(this.env.ATTACHMENTS, `ws/${readWorkspaceId(this.ctx, this.env)}/`)
     await this.ctx.storage.deleteAlarm()
     await this.ctx.storage.deleteAll()
     // The object lives on in memory. Give it the empty state a fresh one starts with, under a new secret.
@@ -379,7 +376,7 @@ export class AnsaStore extends DurableObject<StoreEnv> {
 
   protected async scheduleAlarm() {
     const snoozed = get<{ at: number | null }>('SELECT MIN(snoozed_until) AS at FROM conversations WHERE snoozed_until IS NOT NULL')?.at ?? null
-    const deadlines = [nextScheduledAt(), nextRetryAt(), nextDomainCheckAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
+    const deadlines = [nextScheduledAt(), nextRetryAt(), nextResetAt(), snoozed, this.pollDeadline(), this.importDeadline()].filter((at): at is number => at !== null)
     const current = await this.ctx.storage.getAlarm()
     if (deadlines.length === 0) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -406,7 +403,6 @@ export class AnsaStore extends DurableObject<StoreEnv> {
         }],
         ['dispatchScheduled', () => dispatchScheduled()],
         ['dispatchQueued', () => dispatchQueued()],
-        ['checkDueDomains', () => checkDueDomains()],
         ['pollAllMailboxes', async () => {
           const pollAt = this.pollDeadline()
           if (pollAt !== null && pollAt <= Date.now()) {

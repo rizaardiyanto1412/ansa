@@ -223,7 +223,7 @@ function serializeThread(t: any, attachments: any[]) {
     to: parseJson<string[]>(t.to_addrs, []),
     cc: parseJson<string[]>(t.cc, []),
     bcc: parseJson<string[]>(t.bcc, []),
-    state: t.state as 'sent' | 'sending' | 'queued' | 'failed' | 'scheduled',
+    state: t.state as 'sent' | 'sending' | 'queued' | 'failed' | 'uncertain' | 'scheduled',
     retryAt: (t.retry_at as number | null) ?? null,
     /** When a scheduled reply goes out. Null once it is sent, or while it is held back. */
     sendAt: (t.send_at as number | null) ?? null,
@@ -926,12 +926,12 @@ export function mergeConversations(sourceId: number, targetId: number, actor: Ac
   return getSummary(targetId)
 }
 
-/** Retry a reply that failed to send. */
-export function retryDelivery(threadId: number, actor: Actor) {
+export function retryDelivery(threadId: number, actor: Actor, confirmed = false) {
   assertCanEmail(actor)
-  const t = get<any>(`SELECT id, conversation_id FROM threads WHERE id = ? AND type = 'reply' AND state = 'failed'`, threadId)
+  const t = get<{ state: 'failed' | 'uncertain' }>(`SELECT state FROM threads WHERE id = ? AND type = 'reply' AND state IN ('failed', 'uncertain')`, threadId)
   if (!t) throw new AppError('That message is not waiting to be re-sent.')
-  run(`UPDATE threads SET state = 'sending', error = NULL, attempts = 0, retry_at = NULL WHERE id = ?`, threadId)
+  if (t.state === 'uncertain' && !confirmed) throw new AppError('This reply may already have reached the customer. Confirm that you want to send it again.', 409)
+  run(`UPDATE threads SET state = 'sending', error = NULL, attempts = 0, retry_at = NULL, attempt_id = NULL WHERE id = ?`, threadId)
   queueDelivery(threadId)
 }
 

@@ -72,7 +72,6 @@ const NOTIFICATION_HEADERS = { 'X-Ansa-Notification': '1', 'Auto-Submitted': 'au
 const canNotify = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.smtp_host)
 const repliesComeBack = (mailbox: MailboxRow) => (mailbox.kind === 'managed' ? !!mailbox.inbound_address : !!mailbox.imap_enabled && !!mailbox.imap_host)
 
-/** A managed mailbox has no server of its own: the control plane sends, and answers return to the inbound address. */
 function sendToTeammate(mailbox: MailboxRow, mail: { to: string; subject: string; html: string; messageId?: string }) {
   const fromName = `${mailbox.name} (${brandName()})`
   const sending =
@@ -139,7 +138,7 @@ export function renderNotification(view: NotificationView): string {
           <td style="font:17px ${FONT}; color:#8a8f98;"><strong style="color:#14161a;">${escapeHtml(t.author.name)}</strong> ${verb}</td>
           <td align="right" valign="top" style="font:12px ${FONT}; color:#8a8f98; white-space:nowrap; padding-top:4px;">${when(t.createdAt)}</td>
         </tr></table>
-        ${t.state === 'failed' ? `<div style="font:12px ${FONT}; color:#b42318; padding-top:4px;">Not sent: ${escapeHtml(t.error || 'delivery failed')}</div>` : ''}
+        ${t.state === 'failed' || t.state === 'uncertain' ? `<div style="font:12px ${FONT}; color:#b42318; padding-top:4px;">${t.state === 'failed' ? 'Not sent' : 'Delivery uncertain'}: ${escapeHtml(t.error || 'delivery failed')}</div>` : ''}
         <div style="font:14px/1.55 ${FONT}; color:#1f2328; padding-top:14px; overflow-wrap:anywhere;">${emailSafe(t.bodyHtml)}</div>
         ${files.length ? `<div style="font:12px ${FONT}; color:#8a8f98; padding-top:12px;">Attachments: ${files.map((a) => escapeHtml(a.filename)).join(', ')}</div>` : ''}
       </td></tr>`

@@ -49,7 +49,7 @@ const tick = async () => (await call('GET', '/__tick')).data.alarm as number | n
 const nextAlarm = async () => (await call('GET', '/__next-alarm')).data.alarm as number | null
 const mailbox = async (id: number) => ((await call('GET', '/api/mailboxes')).data.mailboxes as any[]).find((m) => m.id === id)
 
-const plan = { plan: 'trial', mailboxLimit: 2, readOnly: false, hourlySendLimit: 100 }
+const plan = { plan: 'trial', mailboxLimit: 2, readOnly: false, hourlySendLimit: 100, trialEndsAt: Date.now() + 14 * 86_400_000 }
 const eml = (headers: Record<string, string>, body: string) =>
   [...Object.entries({ 'MIME-Version': '1.0', 'Content-Type': 'text/plain; charset=utf-8', ...headers }).map(([k, v]) => `${k}: ${v}`), '', body].join('\r\n')
 
@@ -121,6 +121,7 @@ test('a managed mailbox gets an inbound address, and the plan limits how many ma
   assert.equal(counts[counts.length - 1], 1, 'the control plane hears the mailbox count change')
 
   const billing = await call('GET', '/api/billing')
+  assert.equal(billing.data.plan.trialEndsAt, plan.trialEndsAt, 'billing receives the control-plane trial deadline in epoch milliseconds')
   assert.deepEqual([billing.status, billing.data.plan.plan, billing.data.mailboxes, billing.data.links.portal], [200, 'trial', 1, 'https://pay.hosted.test/portal'], 'billing shows the plan, the usage and the links')
 })
 
@@ -148,10 +149,10 @@ test('inbound mail is filed once, with or without a Message-ID', async () => {
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw: bare })).result, 'duplicate', 'without a Message-ID the bytes decide')
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw: bare.replace('I have', 'I still have') })).result, 'accepted', 'other bytes are another message')
 
-  await (await bucket()).put('inbound/large-1', eml({ From: 'Eve <eve@customer.test>', To: 'support@acme.test', Subject: 'From R2', 'Message-ID': '<r2-1@customer.test>' }, 'Stored first'))
-  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/large-1' })).result, 'accepted', 'a large message is read from R2')
-  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/large-1' })).result, 'duplicate')
-  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/missing' })).error?.name, 'NotFound')
+  await (await bucket()).put('inbound/mail/large-1', eml({ From: 'Eve <eve@customer.test>', To: 'support@acme.test', Subject: 'From R2', 'Message-ID': '<r2-1@customer.test>' }, 'Stored first'))
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/mail/large-1' })).result, 'accepted', 'a large message is read from R2')
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/mail/large-1' })).result, 'duplicate')
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'inbound/mail/missing' })).error?.name, 'NotFound')
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'ws/other/secret' })).error?.name, 'Invalid', "another workspace's objects are out of reach")
   assert.equal((await rpc('ingestInbound', { mailboxId: 999, raw: first })).error?.name, 'NotFound', 'an unknown mailbox is an error, so the sender retries')
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId })).error?.name, 'Invalid')
@@ -159,6 +160,16 @@ test('inbound mail is filed once, with or without a Message-ID', async () => {
   const subjects = (await sql<{ subject: string }>('SELECT subject FROM conversations ORDER BY id')).map((row) => row.subject)
   assert.deepEqual(subjects, ['(#482913077) Gmail Forwarding Confirmation - Receive Mail from support@acme.test', 'Where is my order', 'No id', 'No id', 'From R2'])
   conversationId = (await sql<{ id: number }>(`SELECT id FROM conversations WHERE subject = 'Where is my order'`))[0].id
+})
+
+test('inbound R2 keys are restricted to the owning workspace', async () => {
+  const first = eml({ From: 'Cara <cara@customer.test>', To: 'support@acme.test', 'Message-ID': '<order-1@customer.test>' }, 'Hello?')
+  for (const key of ['inbound/other/secret', 'inbound/mailroom/secret', 'inbound/unscoped']) {
+    await (await bucket()).put(key, first.replace('<order-1@customer.test>', `<${key}@customer.test>`))
+    assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: key })).error?.name, 'Invalid', `${key} cannot be read by this workspace`)
+  }
+  await (await bucket()).put('ws/mail/raw/message', first)
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, r2Key: 'ws/mail/raw/message' })).result, 'duplicate', 'the workspace can read its own prefix')
 })
 
 test('replies go through the fallback until the domain verifies, then through the tenant SMTP server', async () => {
@@ -177,7 +188,7 @@ test('replies go through the fallback until the domain verifies, then through th
   assert.deepEqual([added.data.mailbox.managed.sendingDomain, added.data.mailbox.managed.sendingStatus, added.data.mailbox.managed.sendingRecords.length], ['acme.test', 'pending', 2])
   assert.deepEqual(await controlCalls('addSendingDomain'), [[supportId, 'acme.test']], "the domain is the one in the mailbox's address")
   const recheck = await nextAlarm()
-  assert.ok(recheck !== null && recheck > Date.now() + 9 * 60_000 && recheck < Date.now() + 11 * 60_000, `the alarm looks at the domain again in ten minutes, not at ${recheck && new Date(recheck).toISOString()}`)
+  assert.equal(recheck, null, 'pending sending domains never schedule an object alarm')
 
   const pending = await reply(conversationId, 'Sent while DNS is pending')
   assert.equal(pending.state, 'sent')
@@ -188,8 +199,10 @@ test('replies go through the fallback until the domain verifies, then through th
   await script({ domain: 'verified' })
   await sql('UPDATE mailboxes SET sending_checked_at = sending_checked_at - ? WHERE id = ?', 11 * 60_000, supportId)
   await tick()
-  assert.equal((await mailbox(supportId)).managed.sendingStatus, 'verified', 'the alarm checks a pending domain by itself')
-  assert.equal((await controlCalls('checkSendingDomain')).length, 2)
+  assert.equal((await mailbox(supportId)).managed.sendingStatus, 'pending', 'the object alarm leaves scheduled domain checks to the control plane')
+  assert.equal((await controlCalls('checkSendingDomain')).length, 1, 'only Check now called the control plane')
+  assert.equal((await rpc('setSendingDomain', { mailboxId: supportId, domain: 'acme.test', status: 'verified', records: [] })).error, undefined)
+  assert.equal((await mailbox(supportId)).managed.sendingStatus, 'verified', 'the control plane pushes the verified status')
 
   catcher.script.greeting = '451 4.7.1 Hourly cap reached, try again later'
   const verified = await reply(conversationId, 'Sent as our own domain')
@@ -258,9 +271,42 @@ test('a read-only workspace receives mail but does not send', async () => {
   assert.equal((await reply(conversationId, 'Back in business')).state, 'sent')
 })
 
+test('a failed inbound transaction stays resumable in workerd', async () => {
+  const raw = ['From: Cara <cara@customer.test>', 'To: support@acme.test', 'Subject: Atomic inbound', 'Message-ID: <atomic@customer.test>', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary=b', '', '--b', 'Content-Type: text/plain', '', 'See attached', '--b', 'Content-Type: text/plain; name=atomic.txt', 'Content-Disposition: attachment; filename=atomic.txt', '', 'durable file', '--b--', ''].join('\r\n')
+  await sql(`CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments WHEN NEW.filename = 'atomic.txt' BEGIN SELECT RAISE(ABORT, 'attachment row unavailable'); END`)
+  const failed = await rpc('ingestInbound', { mailboxId: supportId, raw })
+  assert.match(failed.error?.message ?? '', /attachment row unavailable/)
+  assert.deepEqual(await sql(`SELECT subject FROM conversations WHERE subject = 'Atomic inbound'`), [], 'a failed attachment row rolls back the conversation')
+  assert.deepEqual(await sql(`SELECT id FROM threads WHERE message_id = '<atomic@customer.test>'`), [], 'a failed attachment row rolls back the thread')
+  assert.deepEqual(await sql(`SELECT state FROM inbound_ingests WHERE key = 'id:<atomic@customer.test>'`), [{ state: 'started' }], 'a failed transaction rolls back completion')
+  await sql('DROP TRIGGER reject_attachment')
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw })).result, 'accepted')
+  assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw })).result, 'duplicate')
+  assert.deepEqual(await sql(`SELECT COUNT(*) AS n FROM conversations WHERE subject = 'Atomic inbound'`), [{ n: 1 }], 'the retry creates exactly one conversation')
+})
+
+test('the retry API requires explicit confirmation for an uncertain reply', async () => {
+  const sent = await reply(conversationId, 'May already be delivered')
+  await sql(`UPDATE threads SET state = 'uncertain', attempt_id = message_id WHERE id = ?`, sent.id)
+  const before = (await controlCalls('sendFallback')).length
+  for (const body of [undefined, { confirm: false }, { confirm: 'true' }]) {
+    const denied = await call('POST', `/api/threads/${sent.id}/retry`, body)
+    assert.equal(denied.status, 409, 'only boolean confirmation authorizes another delivery')
+    assert.equal((await settled(sent.id)).state, 'uncertain')
+  }
+  assert.equal((await controlCalls('sendFallback')).length, before, 'unconfirmed requests send nothing')
+  assert.equal((await call('POST', `/api/threads/${sent.id}/retry`, { confirm: true })).status, 200)
+  const resent = await settled(sent.id)
+  assert.equal(resent.state, 'sent')
+  assert.equal(resent.message_id, sent.message_id, 'the confirmed resend preserves Message-ID')
+  assert.equal((await controlCalls('sendFallback')).length, before + 1)
+})
+
 test('a hard bounce marks the sent reply failed', async () => {
   const [sent] = await sql<{ id: number; message_id: string; provider_id: string }>(`SELECT id, message_id, provider_id FROM threads WHERE type = 'reply' AND state = 'sent' ORDER BY id LIMIT 1`)
   assert.equal((await rpc('noteBounce', { messageId: '<nobody-sent-this@acme.test>', recipient: 'cara@customer.test', kind: 'hard', reason: 'unknown' })).error, undefined, 'an unknown message is ignored')
+  assert.equal((await rpc('noteBounce', { messageId: sent.message_id, recipient: 'stranger@customer.test', kind: 'hard', reason: '550 unrelated recipient' })).error, undefined)
+  assert.equal((await settled(sent.id)).state, 'sent', 'a bounce for someone outside the reply recipients does not fail it')
   assert.equal((await rpc('noteBounce', { messageId: sent.message_id, recipient: 'cara@customer.test', kind: 'complaint', reason: 'abuse' })).error, undefined)
   assert.equal((await settled(sent.id)).state, 'sent', 'a spam complaint does not mean the reply was lost')
   assert.equal((await rpc('noteBounce', { messageId: sent.message_id.replace(/^<|>$/g, ''), recipient: 'cara@customer.test', kind: 'hard', reason: '550 5.1.1 The email account does not exist' })).error, undefined)
@@ -274,7 +320,7 @@ test('a hard bounce marks the sent reply failed', async () => {
   assert.equal((await rpc('noteBounce', { messageId: '', recipient: 'x', kind: 'soft', reason: '' })).error?.name, 'Invalid')
 })
 
-test('an export is a zip in R2 without secrets, and delete leaves nothing behind', async () => {
+test('an export is a zip in R2 without secrets, and hosted delete keeps files for the control-plane grace period', async () => {
   const withFile = ['From: Cara <cara@customer.test>', 'To: support@acme.test', 'Subject: A file', 'Message-ID: <file-1@customer.test>', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary=b', '', '--b', 'Content-Type: text/plain', '', 'See attached', '--b', 'Content-Type: text/plain; name=notes.txt', 'Content-Disposition: attachment; filename=notes.txt', '', 'file body here', '--b--', ''].join('\r\n')
   assert.equal((await rpc('ingestInbound', { mailboxId: supportId, raw: withFile })).result, 'accepted')
   const token = await call('POST', '/api/tokens', { name: 'CI' })
@@ -304,9 +350,11 @@ test('an export is a zip in R2 without secrets, and delete leaves nothing behind
   assert.deepEqual(readZip(new Uint8Array(await download.arrayBuffer())).map((file) => file.name), names)
 
   assert.ok((await store.list({ prefix: 'ws/mail/' })).objects.length >= 2, 'the workspace has objects in R2 before it is deleted')
+  const retained = (await store.list({ prefix: 'ws/mail/' })).objects.map((object) => object.key)
   await store.put('ws/mailroom/keep.txt', 'another workspace')
   assert.equal((await rpc('deleteWorkspace')).error, undefined)
-  assert.deepEqual((await store.list({ prefix: 'ws/mail/' })).objects, [], 'every object under the workspace prefix is gone')
+  assert.deepEqual((await store.list({ prefix: 'ws/mail/' })).objects.map((object) => object.key), retained, 'hosted deletion retains R2 objects for seven-day cleanup by the control plane')
+  assert.ok(await store.get(exported.result.r2Key), 'the exported archive survives workspace deletion')
   assert.equal((await store.list({ prefix: 'ws/mailroom/' })).objects.length, 1, 'a workspace whose id only starts the same keeps its files')
   assert.deepEqual(await sql('SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COUNT(*) FROM mailboxes) AS mailboxes, (SELECT COUNT(*) FROM conversations) AS conversations, (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM settings) AS settings, (SELECT COUNT(*) FROM sessions) AS sessions'), [
     { users: 0, mailboxes: 0, conversations: 0, threads: 0, settings: 0, sessions: 0 },

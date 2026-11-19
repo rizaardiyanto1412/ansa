@@ -52,7 +52,6 @@ export interface MailboxRow {
   sending_domain: string
   sending_status: SendingStatus
   sending_records: string
-  sending_since: number | null
   sending_checked_at: number | null
   forwarding_confirmation: string | null
   first_inbound_at: number | null
@@ -244,7 +243,8 @@ function retryHint(err: unknown, mailbox: MailboxRow): { retryAt: number | null;
   return null
 }
 
-/** Deliver an agent reply. Marks the thread sent, queued for another try, or failed, and tells open browsers. */
+export const UNCERTAIN_REASON = 'This reply may have been delivered. Ansa restarted while sending it and could not confirm delivery.'
+
 export async function deliverThread(threadId: number): Promise<void> {
   const thread = get<any>('SELECT * FROM threads WHERE id = ?', threadId)
   if (!thread || thread.type !== 'reply' || thread.state !== 'sending') return
@@ -253,7 +253,7 @@ export async function deliverThread(threadId: number): Promise<void> {
   if (!conversation || !mailbox) return
   const settle = (state: 'sent' | 'failed' | 'queued', change: { error?: string; retryAt?: number; attempts?: number; providerId?: string | null } = {}) => {
     run(
-      'UPDATE threads SET state = ?, error = ?, retry_at = ?, attempts = ?, provider_id = COALESCE(?, provider_id) WHERE id = ?',
+      'UPDATE threads SET state = ?, error = ?, retry_at = ?, attempts = ?, attempt_id = NULL, provider_id = COALESCE(?, provider_id) WHERE id = ?',
       state,
       change.error ?? null,
       change.retryAt ?? null,
@@ -294,13 +294,15 @@ export async function deliverThread(threadId: number): Promise<void> {
       if (content) attachments.push({ filename: a.filename, content: Buffer.from(await new Response(content.body).arrayBuffer()), contentType: a.mime })
     }
 
+    const attemptId: string = thread.message_id ?? newMessageId(mailbox.email)
+    run('UPDATE threads SET attempt_id = ?, message_id = ? WHERE id = ?', attemptId, attemptId, threadId)
     const { providerId } = await sendMail(mailbox, {
       to: parseJson<string[]>(thread.to_addrs, []),
       cc: parseJson<string[]>(thread.cc, []),
       bcc: parseJson<string[]>(thread.bcc, []),
       subject: isFirst ? conversation.subject || '(no subject)' : reSubject(conversation.subject || '(no subject)'),
       html: wrapEmailHtml(html),
-      messageId: thread.message_id,
+      messageId: attemptId,
       inReplyTo: thread.in_reply_to,
       references: thread.refs ? String(thread.refs).split(/\s+/).filter(Boolean) : [],
       attachments,

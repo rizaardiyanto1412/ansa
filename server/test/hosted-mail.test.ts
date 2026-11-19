@@ -11,7 +11,7 @@ import type { ControlPlane, SystemEmail } from '../hosted.ts'
 import { dispatchQueued, nextRetryAt } from '../mail/outbound.ts'
 import { addReply, createConversation, getConversation, retryDelivery, updateConversation } from '../services/conversations.ts'
 import { EXPORT_BLANKED_COLUMNS, EXPORT_OMITTED_TABLES, exportArchive } from '../services/export.ts'
-import { gmailForwardingConfirmation, ingestInbound } from '../services/managed.ts'
+import { gmailForwardingConfirmation, ingestInbound, noteBounce } from '../services/managed.ts'
 import { provision } from '../services/provision.ts'
 import { runInTenant } from '../tenant.ts'
 import { openNodeTenant } from '../tenant-node.ts'
@@ -263,5 +263,141 @@ test('a managed mailbox notifies teammates through the control plane, and their 
     assert.deepEqual(ws.control.fallback.map((sent) => [sent.from, sent.to]), [['"Support" <support@acme.test>', ['cara@customer.test']]], 'it went out through the fallback, as the mailbox')
     assert.equal(await ingestInbound(mailboxId, answer), 'duplicate', 'a second delivery of the answer sends nothing more')
     assert.equal(get<{ n: number }>(`SELECT COUNT(*) AS n FROM threads WHERE type = 'reply'`)!.n, 1)
+  })
+})
+
+const inboundWithFiles = (messageId?: string) => Buffer.from([
+  'From: Cara <cara@customer.test>', 'To: support@acme.test', 'Subject: Retry with files',
+  ...(messageId ? [`Message-ID: ${messageId}`] : []),
+  'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary=files', '',
+  '--files', 'Content-Type: text/plain', '', 'See both files',
+  '--files', 'Content-Type: text/plain; name=first.txt', 'Content-Disposition: attachment; filename=first.txt', '', 'first body',
+  '--files', 'Content-Type: text/plain; name=second.txt', 'Content-Disposition: attachment; filename=second.txt', '', 'second body',
+  '--files--', '',
+].join('\r\n'))
+
+function managedInstall() {
+  const ws = install({ ANSA_HOSTED: '1' })
+  const mailboxId = ws.inside(() => {
+    provision({ workspaceId: 'acme', workspaceName: 'Acme', appUrl: 'https://acme.hosted.test', admin: { name: 'Ada', email: 'ada@acme.test' }, smtp: { host: 'smtp.tenant.test', port: 587, security: 'starttls', user: 'u', pass: 'p' }, planState: { plan: 'team', mailboxLimit: 10, readOnly: false, hourlySendLimit: 100 } })
+    return run(`INSERT INTO mailboxes (name, email, kind, inbound_address, created_at) VALUES ('Support', 'support@acme.test', 'managed', 'acme-m1@in.hosted.test', 1)`).id
+  })
+  return { ...ws, mailboxId }
+}
+
+for (const messageId of ['<resume@customer.test>', undefined]) {
+  test(`interrupted inbound with ${messageId ? 'a Message-ID' : 'no Message-ID'} resumes after restart without partial rows`, async () => {
+    const ws = managedInstall()
+    const store = ws.tenant.blobs
+    const written: string[] = []
+    let writes = 0
+    ws.tenant.blobs = { ...store, put: async (key, data) => {
+      written.push(key)
+      if (++writes === 2) throw new Error('blob store unavailable')
+      await store.put(key, data)
+    } }
+    const raw = inboundWithFiles(messageId)
+    await ws.inside(async () => {
+      await assert.rejects(ingestInbound(ws.mailboxId, raw), /blob store unavailable/)
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM conversations')!.n, 0, 'a failed blob write creates no conversation')
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM threads')!.n, 0, 'a failed blob write creates no thread')
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM attachments')!.n, 0, 'a failed blob write creates no attachment row')
+      assert.equal(get<{ state: string }>('SELECT state FROM inbound_ingests')!.state, 'started', 'the delivery stays resumable')
+      assert.equal(get<{ first_inbound_at: number | null }>('SELECT first_inbound_at FROM mailboxes')!.first_inbound_at, null, 'an interrupted delivery does not mark forwarding as working')
+    })
+    const restarted = openNodeTenant(readConfig((key) => ({ DATA_DIR: ws.dataDir, ANSA_HOSTED: '1' })[key]))
+    restarted.control = ws.control
+    await runInTenant(restarted, async () => {
+      prepareData()
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'accepted', 'a started delivery is retried after restart')
+      assert.equal(await ingestInbound(ws.mailboxId, raw), 'duplicate', 'only a completed delivery is a duplicate')
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM conversations')!.n, 1)
+      assert.equal(get<{ n: number }>('SELECT COUNT(*) AS n FROM threads')!.n, 1)
+      const files = all<{ storage_key: string; filename: string }>('SELECT storage_key, filename FROM attachments ORDER BY id')
+      assert.deepEqual(files.map((file) => file.storage_key), written, 'the retry overwrites the same blob keys')
+      for (const [index, file] of files.entries()) {
+        const blob = await restarted.blobs.get(file.storage_key)
+        assert.ok(blob, `${file.filename} is readable`)
+        assert.equal((await new Response(blob.body).text()).trim(), index === 0 ? 'first body' : 'second body')
+      }
+      assert.equal(get<{ state: string }>('SELECT state FROM inbound_ingests')!.state, 'complete')
+    })
+  })
+}
+
+test('inbound row failures roll back the entire message and concurrent retries file it once', async () => {
+  const ws = managedInstall()
+  await ws.inside(async () => {
+    const raw = inboundWithFiles()
+    ws.tenant.db.exec(`CREATE TRIGGER reject_attachment BEFORE INSERT ON attachments WHEN NEW.filename = 'second.txt' BEGIN SELECT RAISE(ABORT, 'attachment row unavailable'); END`)
+    await assert.rejects(ingestInbound(ws.mailboxId, raw), /attachment row unavailable/)
+    assert.deepEqual({ ...get<Record<string, number>>('SELECT (SELECT COUNT(*) FROM conversations) AS conversations, (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM attachments) AS attachments') }, { conversations: 0, threads: 0, attachments: 0 }, 'all message rows roll back together')
+    assert.equal(get<{ state: string }>('SELECT state FROM inbound_ingests')!.state, 'started', 'completion rolls back with the rows')
+    ws.tenant.db.exec('DROP TRIGGER reject_attachment')
+    const results = await Promise.all([ingestInbound(ws.mailboxId, raw), ingestInbound(ws.mailboxId, raw)])
+    assert.deepEqual(results.sort(), ['accepted', 'duplicate'])
+    assert.deepEqual({ ...get<Record<string, number>>('SELECT (SELECT COUNT(*) FROM conversations) AS conversations, (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM attachments) AS attachments') }, { conversations: 1, threads: 1, attachments: 2 }, 'concurrent retries commit one message with both files')
+  })
+})
+
+test('provider acceptance followed by restart leaves a reply uncertain until a confirmed resend', async () => {
+  const ws = managedInstall()
+  let accept = () => {}
+  const accepted = new Promise<void>((resolve) => { accept = resolve })
+  let attemptId: string | null = null
+  let threadId = 0
+  let rawAccepted = ''
+  let acceptedThread: { state: string; attempt_id: string | null; message_id: string } | undefined
+  ws.control.sendFallback = async (_workspaceId, message) => {
+    rawAccepted = Buffer.from(message.raw).toString('utf8')
+    acceptedThread = get('SELECT * FROM threads WHERE id = ?', threadId)
+    attemptId = acceptedThread?.attempt_id ?? null
+    accept()
+    return new Promise(() => {})
+  }
+  ws.inside(() => {
+    const conversation = createConversation({ mailboxId: ws.mailboxId, customerEmail: 'cara@customer.test', subject: 'Help', bodyHtml: '<p>Help</p>', kind: 'customer' }, { userId: null, via: 'email' })
+    threadId = addReply(conversation.id, { bodyHtml: '<p>Already accepted</p>' }, { userId: 1, via: 'web' })
+  })
+  await accepted
+  assert.equal(acceptedThread?.state, 'sending', 'sending is durable before provider acceptance')
+  assert.ok(attemptId, 'the provider attempt is durable before acceptance')
+  assert.equal(attemptId, acceptedThread?.message_id, 'the attempt id is the outbound Message-ID')
+  assert.ok(attemptId && rawAccepted.includes(`Message-ID: ${attemptId}`), 'the accepted MIME identifies the recorded attempt')
+  const restarted = openNodeTenant(readConfig((key) => ({ DATA_DIR: ws.dataDir, ANSA_HOSTED: '1' })[key]))
+  const control = fakeControl()
+  restarted.control = control
+  await runInTenant(restarted, async () => {
+    prepareData()
+    const uncertain = threadRow(threadId)
+    assert.equal(uncertain.state, 'uncertain', 'a restart cannot call an accepted message failed')
+    assert.match(uncertain.error ?? '', /may have been delivered/i)
+    assert.equal(uncertain.retry_at, null)
+    await dispatchQueued()
+    assert.equal(nextRetryAt(), null)
+    assert.equal(control.fallback.length, 0, 'automatic retries do not send uncertain replies')
+    assert.throws(() => retryDelivery(threadId, { userId: 1, via: 'web' }), /Confirm/, 'a manual resend requires confirmation')
+    assert.equal(threadRow(threadId).state, 'uncertain')
+    retryDelivery(threadId, { userId: 1, via: 'web' }, true)
+    await until(() => threadRow(threadId), (thread) => thread.state === 'sent', 'the confirmed resend')
+    assert.equal(control.fallback.length, 1)
+    assert.ok(control.fallback[0].raw.includes(`Message-ID: ${attemptId}`), 'the confirmed resend keeps the recognised Message-ID')
+  })
+})
+
+
+test('bounces match reply recipients in To, Cc, and Bcc', () => {
+  const ws = managedInstall()
+  ws.inside(() => {
+    const conversation = createConversation({ mailboxId: ws.mailboxId, customerEmail: 'cara@customer.test', subject: 'Help', bodyHtml: '<p>Help</p>', kind: 'customer' }, { userId: null, via: 'email' })
+    const threadId = addReply(conversation.id, { bodyHtml: '<p>Answer</p>', cc: ['copy@customer.test'], bcc: ['hidden@customer.test'], skipDelivery: true }, { userId: 1, via: 'web' })
+    const { message_id: messageId } = get<{ message_id: string }>('SELECT message_id FROM threads WHERE id = ?', threadId)!
+    noteBounce({ messageId, recipient: 'other@customer.test', kind: 'hard', reason: 'unrelated' })
+    assert.equal(threadRow(threadId).state, 'sent', 'a non-recipient cannot fail the reply')
+    for (const recipient of ['Cara <CARA@customer.test>', 'copy@customer.test', 'hidden@customer.test']) {
+      run(`UPDATE threads SET state = 'sent', error = NULL WHERE id = ?`, threadId)
+      noteBounce({ messageId, recipient, kind: 'hard', reason: '550 missing' })
+      assert.equal(threadRow(threadId).state, 'failed', `${recipient} is a recipient of this reply`)
+    }
   })
 })

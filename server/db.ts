@@ -360,6 +360,16 @@ const migrations: string[] = [
   );
   CREATE INDEX outbound_log_sent ON outbound_log(sent_at);
   `,
+  `
+  CREATE TABLE inbound_ingests (
+    key TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('started', 'complete')),
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO inbound_ingests (key, state, created_at) SELECT key, 'complete', created_at FROM inbound_seen;
+  CREATE INDEX inbound_ingests_created ON inbound_ingests(created_at);
+  ALTER TABLE threads ADD COLUMN attempt_id TEXT;
+  `,
 ]
 
 export const schemaVersion = () => get<{ n: number }>('SELECT COALESCE(MAX(id), 0) AS n FROM _migrations')?.n ?? 0

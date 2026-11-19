@@ -3,7 +3,7 @@ import { blobs, type StoredBlob } from '../blobs.ts'
 import { zipStream, type ZipEntry } from '../zip.ts'
 import { getWorkspace } from './workspace.ts'
 
-export const EXPORT_OMITTED_TABLES = ['sessions', 'api_tokens', 'one_time_links', 'attempts', 'reset_outbox', 'inbound_seen', 'outbound_log', '_blobs']
+export const EXPORT_OMITTED_TABLES = ['sessions', 'api_tokens', 'one_time_links', 'attempts', 'reset_outbox', 'inbound_seen', 'inbound_ingests', 'outbound_log', '_blobs']
 export const EXPORT_BLANKED_COLUMNS: Record<string, string[]> = {
   users: ['password_hash'],
   mailboxes: ['smtp_pass_enc', 'imap_pass_enc'],

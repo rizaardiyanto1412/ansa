@@ -158,7 +158,7 @@ export interface Thread {
   to: string[]
   cc: string[]
   bcc: string[]
-  state: 'sent' | 'sending' | 'queued' | 'failed' | 'scheduled'
+  state: 'sent' | 'sending' | 'queued' | 'failed' | 'uncertain' | 'scheduled'
   retryAt: number | null
   sendAt: number | null
   error: string | null

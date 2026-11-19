@@ -106,7 +106,6 @@ function Home() {
   const list = mailboxes.data ?? []
   if (list.length === 0) return <Welcome />
   const first = list[0]
-  // Until one mailbox receives mail there is no inbox to show, so an admin lands on the forwarding steps.
   if (user.role === 'admin' && list.every((m) => m.kind === 'managed' && !m.receiving)) return <Navigate to={`/settings/mailboxes/${first.id}`} replace />
   return <Navigate to={`/m/${first.id}/${first.counts.unassigned === 0 && first.counts.mine > 0 && user ? 'mine' : 'unassigned'}`} replace />
 }
