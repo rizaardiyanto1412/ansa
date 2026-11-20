@@ -543,3 +543,23 @@ test('internal-only tokens can add notes but cannot email customers', () => {
   const replyId = conversations.addReply(id, { bodyHtml: '<p>Answer</p>' }, { ...actor, access: 'full' })
   assert.equal(conversations.getConversation(id).threads.find((t) => t.id === replyId)?.type, 'reply')
 })
+
+test('a note can be edited by its author only, in place', () => {
+  const other = run(`INSERT INTO users (name, email, password_hash, role, created_at) VALUES ('Nell Note', 'nell@notes.test', 'x', 'agent', 1)`).id
+  const { id } = conversations.createConversation(
+    { mailboxId, customerEmail: 'ed@notes.test', subject: 'Edit note', bodyHtml: '<p>Hi</p>', kind: 'customer' },
+    { userId: null, via: 'email' },
+  )
+  const noteId = conversations.addNote(id, { bodyHtml: '<p>First take</p>' }, { userId: agentId, via: 'api' })
+  const later = conversations.addNote(id, { bodyHtml: '<p>Later note</p>' }, { userId: other, via: 'web' })
+  assert.equal(conversations.editNote(noteId, { bodyHtml: '<p>Summary</p><p>Second line</p>' }, { userId: agentId, via: 'api', access: 'internal' }), id)
+  const threads = conversations.getConversation(id).threads
+  const ids = threads.map((t: any) => t.id)
+  assert.ok(ids.indexOf(noteId) < ids.indexOf(later), 'keeps its place')
+  const edited = threads.find((t: any) => t.id === noteId)!
+  assert.ok(edited.bodyHtml.includes('Summary') && !edited.bodyHtml.includes('First take'))
+  assert.equal(threads.filter((t: any) => t.type === 'note').length, 2)
+  assert.throws(() => conversations.editNote(later, { bodyHtml: '<p>x</p>' }, { userId: agentId, via: 'api' }), /Only the author/)
+  assert.throws(() => conversations.editNote(noteId, { bodyHtml: '<p> </p>' }, { userId: agentId, via: 'api' }), /Write a note/)
+  assert.throws(() => conversations.editNote(threads[0].id, { bodyHtml: '<p>x</p>' }, { userId: agentId, via: 'api' }), /Note not found/)
+})
