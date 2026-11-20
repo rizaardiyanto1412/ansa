@@ -655,6 +655,22 @@ export function addNote(conversationId: number, input: NoteInput, actor: Actor):
   return threadId
 }
 
+/** Rewrite a note. Only its author can, and only the text changes: it keeps its place and attachments. */
+export function editNote(threadId: number, input: { bodyHtml: string }, actor: Actor): number {
+  const bodyHtml = cleanHtml(input.bodyHtml)
+  const text = htmlToText(bodyHtml)
+  if (!text.trim()) throw new AppError('Write a note before saving.')
+  const thread = get<any>('SELECT conversation_id, type, user_id FROM threads WHERE id = ?', threadId)
+  if (!thread || thread.type !== 'note') throw new AppError('Note not found.', 404)
+  if (actor.userId === null || thread.user_id !== actor.userId) throw new AppError('Only the author can edit a note.', 403)
+  tx(() => {
+    run('UPDATE threads SET body_html = ?, body_text = ? WHERE id = ?', bodyHtml, text, threadId)
+    run('UPDATE conversations SET updated_at = ? WHERE id = ?', now(), thread.conversation_id)
+    reindex(thread.conversation_id)
+  })
+  return thread.conversation_id
+}
+
 /**
  * Fold one customer into another: the same person wrote from two addresses.
  * Conversations, messages and addresses move to the target. Empty profile fields are filled from the source.
