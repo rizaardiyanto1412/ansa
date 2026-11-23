@@ -34,6 +34,12 @@ test('cleanHtml removes scripts, handlers and unsafe links', () => {
   assert.ok(out.includes('Hi'))
 })
 
+test('cleanAppHtml keeps only the app-* classes and drops styles', () => {
+  const out = html.cleanAppHtml('<ul class="app-list hero"><li class="app-item" style="color:red" onclick="x()"><a class="app-button btn" href="https://a.test">Go</a></li></ul>')
+  assert.equal(out, '<ul class="app-list"><li class="app-item"><a class="app-button" href="https://a.test" target="_blank" rel="noopener noreferrer nofollow">Go</a></li></ul>')
+  assert.ok(!html.cleanHtml('<p class="app-list">x</p>').includes('class'), 'mail keeps no classes')
+})
+
 test('cleanHtml makes links open safely in a new tab', () => {
   assert.match(html.cleanHtml('<a href="https://example.com">x</a>'), /target="_blank" rel="noopener noreferrer nofollow"/)
 })

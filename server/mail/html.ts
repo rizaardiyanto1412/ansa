@@ -5,9 +5,29 @@ const ALLOWED_TAGS = [
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'img', 'sub', 'sup', 'small',
 ]
 
+/**
+ * The classes an app's sidebar HTML may use. Ansa styles them (`.app-html` in index.css) so every
+ * app looks native; any other class, and every style attribute, is removed. Listed in docs/apps.md.
+ */
+export const APP_CLASSES = [
+  'app-list', 'app-item', 'app-body', 'app-title', 'app-meta', 'app-muted', 'app-label',
+  'app-dot', 'app-dot-ok', 'app-dot-warn', 'app-dot-bad', 'app-dot-muted',
+  'app-badges', 'app-badge', 'app-badge-ok', 'app-badge-warn', 'app-badge-bad', 'app-badge-info',
+  'app-actions', 'app-button', 'app-button-primary', 'app-button-block', 'app-divider',
+]
+
 /** Clean untrusted HTML (incoming mail, editor output) down to a small, safe subset. */
 export function cleanHtml(html: string): string {
-  return sanitizeHtml(html, {
+  return sanitizeHtml(html, options()).trim()
+}
+
+/** Clean an app's sidebar HTML: the same subset as mail, plus the `app-*` classes Ansa styles. */
+export function cleanAppHtml(html: string): string {
+  return sanitizeHtml(html, { ...options(), allowedClasses: { '*': APP_CLASSES } }).trim()
+}
+
+function options(): sanitizeHtml.IOptions {
+  return {
     allowedTags: ALLOWED_TAGS,
     allowedAttributes: {
       a: ['href', 'title', 'target', 'rel'],
@@ -27,7 +47,7 @@ export function cleanHtml(html: string): string {
       }),
     },
     exclusiveFilter: (frame) => frame.tag === 'img' && /^data:(?!image\/(png|jpe?g|gif|webp))/i.test(frame.attribs.src || ''),
-  }).trim()
+  }
 }
 
 const TRAILING_ATTRIBUTION = /(<(div|p|span|br)[^<>]{0,300}>\s*)*(On\s[^<]{5,200}\swrote:|Le\s[^<]{5,200}\sa écrit\s?:|Am\s[^<]{5,200}\sschrieb[^<]{0,80}:)\s*(<\/?(div|p|span|br)[^<>]{0,300}>\s*)*$/i

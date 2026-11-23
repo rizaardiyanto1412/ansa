@@ -9,7 +9,7 @@ import { all, get, run, now, parseJson } from '../db.ts'
 import { config } from '../config.ts'
 import { decrypt, encrypt, randomToken } from '../crypto.ts'
 import { APP_EVENTS, onAppEvent, type AppEvent, type AppEventDetail } from '../hooks.ts'
-import { cleanHtml, escapeHtml, textToHtml } from '../mail/html.ts'
+import { cleanAppHtml, escapeHtml, textToHtml } from '../mail/html.ts'
 import { AppError } from './customers.ts'
 import { getConversation, listThreads } from './conversations.ts'
 
@@ -351,10 +351,10 @@ function fillSidebar(template: string, data: ReturnType<typeof conversationPaylo
 
 /** Template text without tags is treated as plain text: paragraphs, clickable links, and [label](https://…) links. */
 function templateToHtml(filled: string): string {
-  if (/<[a-z][^>]*>/i.test(filled)) return cleanHtml(filled)
+  if (/<[a-z][^>]*>/i.test(filled)) return cleanAppHtml(filled)
   const plain = filled.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   const html = textToHtml(plain).replace(/\[([^\]\n]{1,200})\]\(<a href="([^"]+)"[^>]*>[^<]*<\/a>\)/g, '<a href="$2">$1</a>')
-  return cleanHtml(html)
+  return cleanAppHtml(html)
 }
 
 async function renderOne(app: ReturnType<typeof serializeApp>, data: ReturnType<typeof conversationPayload>, conversationId: number | null): Promise<{ html: string; error: string | null }> {
@@ -376,7 +376,7 @@ async function renderOne(app: ReturnType<typeof serializeApp>, data: ReturnType<
       return { html: '', error: failure.detail }
     }
   }
-  return { html: cleanHtml(html.slice(0, 100_000)), error: null }
+  return { html: cleanAppHtml(html.slice(0, 100_000)), error: null }
 }
 
 /** Sidebar content of every enabled app for one conversation. Apps load side by side; one slow app does not block the others. */

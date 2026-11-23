@@ -40,7 +40,7 @@ function AppPanels({ conversationId, customerId }: { conversationId: number; cus
           {app.error ? (
             <p className="text-[13px] text-danger">{app.error}</p>
           ) : app.html ? (
-            <div className="prose-mail text-[13px]" dangerouslySetInnerHTML={{ __html: app.html }} />
+            <div className="app-html prose-mail text-[13px]" dangerouslySetInnerHTML={{ __html: app.html }} />
           ) : (
             <p className="text-[13px] text-fg-3">Nothing to show.</p>
           )}
