@@ -15,13 +15,28 @@
   <a href="#everything-a-support-team-needs">Features</a> ·
   <a href="#ansa-and-help-scout-side-by-side">Ansa vs Help Scout</a> ·
   <a href="#what-it-costs">What it costs</a> ·
+  <a href="#hosted-ansa-at-helpansacom">Hosted</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="docs/self-hosting.md">Self-hosting guide</a>
 </p>
 
-## Hosted Ansa
+## Hosted Ansa at helpansa.com
 
-Don't want to run it yourself? Ansa is also available hosted at https://helpansa.com, from $10 a month for the whole team.
+Don't want to run a server? [helpansa.com](https://helpansa.com) runs Ansa for you: the same app,
+with email built in.
+
+- **Email included.** Each mailbox gets its own address on `helpansa.com`. Forward your support
+  address to it, verify your domain with DNS records, and replies go out from your own address.
+  You don't need an SMTP or IMAP account. You can still connect one if you prefer.
+- **One price for the team.** Starter is $10 a month for 3 mailboxes, Team is $29 for 10, and
+  Business is $79 for unlimited mailboxes with priority support. Every plan has unlimited users,
+  unlimited conversations and every feature.
+- **Nothing to maintain.** Updates, backups and mail delivery are handled for you. Every plan has a
+  30-day money-back guarantee.
+
+[Start at helpansa.com →](https://helpansa.com)
+
+The code is the same MIT-licensed code in this repository. Self-hosting stays free.
 
 ## Why Ansa
 
@@ -130,7 +145,7 @@ listed them in November 2026.
 | **Price** | Free and open source. You pay for a VPS, or for Cloudflare | Free plan, or $25 (Standard), $45 (Plus) or $75 (Pro) per user a month |
 | **Team size** | No limit | Free: up to 5 users. Standard: up to 25. Plus: up to 50 |
 | **Mailboxes** | No limit | Free: 1. More on paid plans, and extra inboxes cost more |
-| **Where it runs** | Your server or your Cloudflare account | Help Scout's cloud |
+| **Where it runs** | Your server, your Cloudflare account, or hosted at helpansa.com | Help Scout's cloud |
 | **Source code** | MIT license, on GitHub | Closed |
 | **Branding** | Your name and logo | Help Scout's |
 
@@ -169,7 +184,7 @@ price. If you want a fast, calm shared inbox that you own outright, Ansa is buil
 
 ## What it costs
 
-Ansa is free. You pay for where it runs:
+Self-hosted Ansa is free. You pay for where it runs:
 
 | | What you pay |
 |---|---|
@@ -177,6 +192,8 @@ Ansa is free. You pay for where it runs:
 | **On Cloudflare, to try it** | $0 on the [Workers Free](https://developers.cloudflare.com/workers/platform/pricing/) plan. |
 | **On Cloudflare, for a team** | $5 a month on Workers Paid, for the whole account. A team that keeps Ansa open all day needs it, and so does a large import. |
 | **Email** | Nothing extra. Ansa uses the mailbox you already have. |
+
+Or let [helpansa.com](https://helpansa.com) host it, email included, from $10 a month for the whole team.
 
 ## Get started
 
