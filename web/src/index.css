@@ -237,6 +237,183 @@
   margin: 1em 0;
 }
 
+/*
+ * App sidebar content (Settings → Apps). The server keeps only the app-* classes below, so apps
+ * look like the rest of the customer panel. docs/apps.md lists them.
+ */
+.app-html .app-list {
+  list-style: none;
+  margin: 0 -8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.app-html .app-list > li + li {
+  margin-top: 0;
+}
+.app-html .app-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  transition: background-color 120ms;
+}
+.app-html .app-item:hover {
+  background: var(--sunken);
+}
+.app-html .app-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.app-html .app-title {
+  display: block;
+  font-weight: 500;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-html a.app-title:hover {
+  text-decoration: underline;
+}
+.app-html .app-meta {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-3);
+}
+.app-html .app-meta a {
+  color: inherit;
+  text-decoration: none;
+}
+.app-html .app-meta a:hover {
+  color: var(--fg-2);
+  text-decoration: underline;
+}
+.app-html .app-muted {
+  color: var(--fg-3);
+}
+.app-html .app-label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.app-html .app-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--fg-3);
+}
+.app-html .app-dot-ok {
+  background: var(--ok);
+}
+.app-html .app-dot-warn {
+  background: var(--warn);
+}
+.app-html .app-dot-bad {
+  background: var(--danger);
+}
+.app-html .app-dot-muted {
+  background: var(--line-strong);
+}
+.app-html .app-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.app-html .app-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--sunken);
+  color: var(--fg-2);
+}
+.app-html .app-badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.app-html .app-badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.app-html .app-badge-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.app-html .app-badge-info {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+.app-html .app-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.app-html .app-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 120ms, border-color 120ms;
+}
+.app-html .app-button:hover {
+  background: var(--sunken);
+  color: var(--fg);
+  text-decoration: none;
+}
+.app-html .app-button-primary {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+.app-html .app-button-primary:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.app-html .app-button-block {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  margin-top: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.app-html .app-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
 .ProseMirror {
   outline: none;
   min-height: inherit;

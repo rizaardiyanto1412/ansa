@@ -100,9 +100,40 @@ Ansa also accepts a plain HTML body. The JSON shape matches Help Scout's dynamic
 Good to know:
 
 - Answer within 8 seconds. After that, the sidebar shows an error for your app and the other apps still load.
-- Ansa cleans your HTML. Text, links, lists, tables and images stay. Scripts, styles, forms and iframes are removed.
+- Ansa cleans your HTML. Text, links, lists, tables, images and the `app-*` classes stay. Scripts, styles, other classes, forms and iframes are removed.
 - Ansa asks again when a teammate opens the conversation later, or presses the reload button on your app.
 - Escape any value you put into the HTML, as the examples do.
+
+### Make it look native
+
+Ansa removes `style` attributes and unknown classes. It keeps the `app-*` classes below and styles them like the rest of the customer panel, in light and dark mode.
+
+```html
+<ul class="app-list">
+  <li class="app-item">
+    <span class="app-dot app-dot-ok"></span>
+    <div class="app-body">
+      <a class="app-title" href="https://admin.example.com/orders/1042">Order #1042</a>
+      <span class="app-meta">$129.00 · Shipped Nov 10</span>
+      <span class="app-badges"><span class="app-badge app-badge-warn">Refund requested</span></span>
+      <span class="app-actions"><a class="app-button" href="https://admin.example.com/orders/1042/refund">Refund</a></span>
+    </div>
+  </li>
+</ul>
+<a class="app-button app-button-block" href="https://admin.example.com/customers/7">Open in admin</a>
+```
+
+| Class | Use it for |
+|---|---|
+| `app-list`, `app-item` | A list of records, like the Conversations list. Put `app-item` on each `<li>`. |
+| `app-dot` | A status dot at the start of an item. Add `app-dot-ok`, `app-dot-warn`, `app-dot-bad` or `app-dot-muted`. |
+| `app-body` | The text column of an item. |
+| `app-title`, `app-meta` | The item's name (often a link) and a small grey line under it. |
+| `app-badges`, `app-badge` | A row of small labels. Add `app-badge-ok`, `app-badge-warn`, `app-badge-bad` or `app-badge-info`. |
+| `app-actions`, `app-button` | Small buttons. `app-button-primary` stands out. `app-button-block` is a full-width button. |
+| `app-label`, `app-muted`, `app-divider` | A small heading, grey text, and a line between sections. |
+
+Plain HTML without classes still works. It looks like an email.
 
 ## Level 3: react to events with a webhook
 

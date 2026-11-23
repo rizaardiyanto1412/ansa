@@ -370,7 +370,7 @@ function AppEditor({ app, events, onBack, onSaved }: { app: App | null; events: 
                 {result.sidebar?.html && (
                   <div className="rounded-lg border border-line p-3.5">
                     <p className="mb-1.5 text-xs font-medium text-fg-3">{app.name}</p>
-                    <div className="prose-mail text-[13px]" dangerouslySetInnerHTML={{ __html: result.sidebar.html }} />
+                    <div className="app-html prose-mail text-[13px]" dangerouslySetInnerHTML={{ __html: result.sidebar.html }} />
                   </div>
                 )}
               </div>
