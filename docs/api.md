@@ -58,6 +58,7 @@ curl https://your-domain/api/conversations?folder=open \
 | `PATCH /api/conversations/:id` | `status`, `assigneeId`, `subject`, `addTags`, `removeTags`, `snoozedUntil`, `mailboxId` |
 | `POST /api/conversations/:id/reply` | `bodyHtml`, `status`, `cc`, `bcc`, `attachmentIds` |
 | `POST /api/conversations/:id/note` | `bodyHtml` |
+| `PATCH /api/threads/:id` | Edit a note you wrote. `bodyHtml`. Other people's notes and other thread types are refused |
 | `POST /api/conversations/:id/merge` | `intoId` |
 | `GET /api/customers`, `GET/PATCH /api/customers/:id` | Customers |
 | `GET /api/tags`, `/api/saved-replies`, `/api/users`, `/api/mailboxes` | Reference data |

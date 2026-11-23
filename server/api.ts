@@ -26,6 +26,7 @@ import { restartMailbox, syncMailboxNow, testImap } from './mail/imap.ts'
 import { cleanHtml } from './mail/html.ts'
 import {
   addNote,
+  editNote,
   addReply,
   teammateReplyAfter,
   createConversation,
@@ -678,6 +679,12 @@ api.post('/conversations/:id/note', async (c) => {
   const threadId = addNote(id, { bodyHtml: String(data.bodyHtml ?? ''), attachmentIds: Array.isArray(data.attachmentIds) ? data.attachmentIds.map(int) : undefined }, actorOf(c))
   if (data.status) updateConversation(id, { status: data.status }, actorOf(c))
   return c.json({ threadId, conversation: getConversation(id, { userId: c.get('user').id }) }, 201)
+})
+
+api.patch('/threads/:id', async (c) => {
+  const data = await body(c)
+  const conversationId = editNote(idParam(c.req.param('id')), { bodyHtml: String(data.bodyHtml ?? '') }, actorOf(c))
+  return c.json({ conversation: getConversation(conversationId, { userId: c.get('user').id }) })
 })
 
 api.post('/conversations/:id/merge', async (c) => {
