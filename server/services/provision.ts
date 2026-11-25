@@ -77,6 +77,14 @@ export function setPlan(input: PlanState): void {
   currentTenant().deadlineChanged()
 }
 
+export function setWorkspaceName(input: string): void {
+  const state = provisioned()
+  const workspaceName = parse(ProvisionSchema.shape.workspaceName, input)
+  if (state.workspaceName === workspaceName) return
+  saveHostedState({ ...state, workspaceName })
+  publish({ type: 'refresh', scope: 'workspace' })
+}
+
 export function setSmtp(input: SmtpCredential): void {
   const state = provisioned()
   saveHostedState({ ...state, smtp: sealSmtp(parse(SmtpCredentialSchema, input)) })

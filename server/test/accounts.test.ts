@@ -12,7 +12,7 @@ import { all, get, getSetting, run } from '../db.ts'
 import type { ControlPlane, HostedState, SystemEmail } from '../hosted.ts'
 import { deliverResetOutbox } from '../services/accounts.ts'
 import { testApp } from '../services/apps.ts'
-import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../services/provision.ts'
+import { health, provision, setPlan, setSmtp, setWorkspaceName, type ProvisionInput } from '../services/provision.ts'
 import { runInTenant } from '../tenant.ts'
 import { openNodeTenant } from '../tenant-node.ts'
 import { startSmtpCatcher } from './smtp-catcher.ts'
@@ -85,6 +85,7 @@ test('provision starts a workspace once; a second call only makes a new sign-in 
   const trial = provisionInput().planState
   assert.throws(() => ws.inside(() => setPlan(trial)), { name: 'NotProvisioned' }, 'setPlan before provision')
   assert.throws(() => ws.inside(() => setSmtp(provisionInput().smtp)), { name: 'NotProvisioned' }, 'setSmtp before provision')
+  assert.throws(() => ws.inside(() => setWorkspaceName('Acme')), { name: 'NotProvisioned' }, 'setWorkspaceName before provision')
   for (const appUrl of ['javascript:alert(1)', 'https://:443', 'https://acme.hosted.test:99999', 'http://[::1', 'https://user@acme.hosted.test', 'https://acme.hosted.test/path', '']) {
     assert.throws(() => ws.inside(() => provision(provisionInput({ appUrl }))), { name: 'Invalid' }, `appUrl ${JSON.stringify(appUrl)} is refused as Invalid`)
   }
@@ -121,6 +122,11 @@ test('provision starts a workspace once; a second call only makes a new sign-in 
   assert.equal(rotated.smtp.host, 'smtp2.postshiba.test')
   assert.equal(ws.inside(() => decrypt(rotated.smtp.passEnc)), 'rotated')
   assert.deepEqual(rotated.planState, paid, 'setSmtp leaves the plan alone')
+  for (const name of ['', '   ', 'x'.repeat(101)]) assert.throws(() => ws.inside(() => setWorkspaceName(name)), { name: 'Invalid' }, `name ${JSON.stringify(name)} is refused`)
+  ws.inside(() => setWorkspaceName('  Acme Help Desk  '))
+  const renamed = ws.inside(() => getSetting<HostedState | null>('hosted', null))!
+  assert.deepEqual(renamed, { ...rotated, workspaceName: 'Acme Help Desk' }, 'setWorkspaceName changes only the trimmed name')
+  assert.equal((await ws.call('GET', '/bootstrap')).data.workspace.name, 'Acme Help Desk', 'the browser sees the new name')
 
   const migrations = ws.inside(() => get<{ n: number }>('SELECT COUNT(*) AS n FROM _migrations'))!.n
   assert.deepEqual(ws.inside(health), { schemaVersion: migrations, coreVersion: pkg.version, mailboxes: 0, users: 1 })

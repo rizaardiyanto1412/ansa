@@ -26,6 +26,10 @@ The control plane owns periodic checks of pending sending domains and pushes sta
 
 `PlanState` accepts optional `trialEndsAt: number | null`, in epoch milliseconds. The control plane supplies this value through `provision` or `setPlan`. Billing and the trial banner show the remaining days when a trial has a deadline, rounded up and clamped to zero. An omitted or null deadline hides the countdown.
 
+## Workspace name
+
+`setWorkspaceName(name)` replaces the name that `provision` stored. The name is trimmed and must be 1 to 100 characters, or the call fails with `Invalid`. An object that was never provisioned fails with `NotProvisioned`. Open browsers reload the workspace settings. Repeating the call with the same name changes nothing.
+
 ## Workspace deletion
 
 Hosted `deleteWorkspace` closes sockets, stops mail polling, and deletes the object's data and alarm. It retains all R2 objects, including exports. The control plane owns deletion of `ws/<workspaceId>/` after a seven-day grace period. Repeating `deleteWorkspace` is safe.
