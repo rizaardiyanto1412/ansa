@@ -16,7 +16,7 @@ import { HibernatingEvents } from './live.ts'
 import { subscribe } from '../server/events.ts'
 import { pruneSessions } from '../server/auth.ts'
 import { rpcError, RESTORE_WINDOW_MS, type WorkspaceRestoreRpc, type ControlPlane, type Health, type PlanState, type SmtpCredential } from '../server/hosted.ts'
-import { health, provision, setPlan, setSmtp, type ProvisionInput } from '../server/services/provision.ts'
+import { health, provision, setPlan, setSmtp, setWorkspaceName, type ProvisionInput } from '../server/services/provision.ts'
 import { ingestInbound, nextIngestCleanupAt, pruneInboundIngests, noteBounce, setSendingDomain } from '../server/services/managed.ts'
 import { exportArchive } from '../server/services/export.ts'
 import { pollAllMailboxes, stopAllMailboxes } from '../server/mail/imap.ts'
@@ -237,6 +237,10 @@ export class AnsaStore extends DurableObject<StoreEnv> implements WorkspaceResto
 
   async setSmtp(smtp: SmtpCredential): Promise<void> {
     this.inTenant(() => setSmtp(smtp))
+  }
+
+  async setWorkspaceName(name: string): Promise<void> {
+    this.inTenant(() => setWorkspaceName(name))
   }
 
   async health(): Promise<Health> {

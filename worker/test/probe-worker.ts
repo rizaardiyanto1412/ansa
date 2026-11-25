@@ -26,7 +26,7 @@ function scheduleDueReply(): number {
 
 const failure = (err: unknown) => new Response(err instanceof Error ? err.stack || err.message : String(err), { status: 500 })
 
-const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'health', 'ingestInbound', 'setSendingDomain', 'noteBounce', 'exportWorkspace', 'deleteWorkspace', 'restoreBookmark', 'restoreTo']
+const RPC_METHODS = ['provision', 'setPlan', 'setSmtp', 'setWorkspaceName', 'health', 'ingestInbound', 'setSendingDomain', 'noteBounce', 'exportWorkspace', 'deleteWorkspace', 'restoreBookmark', 'restoreTo']
 type RpcStub = Record<string, (...input: unknown[]) => Promise<unknown>>
 
 interface ControlScript {
