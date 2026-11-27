@@ -86,6 +86,7 @@ export function BillingSettings() {
         <Card className="p-5">
           <h2 className="text-[15px] font-semibold">{plan.plan === 'trial' ? 'Choose a plan' : 'Change plan'}</h2>
           <p className="mt-0.5 text-[13px] text-fg-3">Payment opens on a secure checkout page. Yearly plans include two months free.</p>
+          <p className="mt-1 text-[13px] text-fg-3">30-day money-back guarantee: if Ansa isn't right for you, ask for a full refund within 30 days of your first payment.</p>
           <div className="mt-4 flex flex-wrap gap-2">
             {offers.map(([key, url]) => (
               <a key={key} href={url}>
